@@ -6,7 +6,8 @@
 
 use std::net::SocketAddr;
 
-use crate::config::{parse_config_str, validate_baud, Parity};
+use crate::config::{parse_config_str, validate_baud, Flow, Parity, SerialConfig};
+use crate::service::Startup;
 
 pub const USAGE: &str = "\
 SerialHub — 串口 <-> WebSocket 桥接 (内嵌 Web 控制台)
@@ -21,6 +22,8 @@ SerialHub — 串口 <-> WebSocket 桥接 (内嵌 Web 控制台)
   --addr <ip:port>   HTTP/WS 监听地址 (默认 127.0.0.1:8080)
   --list-ports       列出本机串口后退出
   --no-open          给了 --port 也不自动打开 (仍作为控制台的默认参数)
+  --headless         纯 CLI 前台模式: 无窗口无托盘 (自动化测试与脚本场景, FR-8)
+  --gui              原生窗口 + 托盘模式 (默认; 与 --headless 互斥)
   -h, --help         显示本帮助
 
 示例:
@@ -37,12 +40,30 @@ pub struct Cli {
     pub addr: SocketAddr,
     pub list_ports: bool,
     pub no_open: bool,
+    /// FR-8: 默认 GUI 模式 (原生窗口 + 托盘); --headless 退回纯 CLI 前台。
+    pub gui: bool,
 }
 
 impl Cli {
     /// FR-5: 给了 --port 且未 --no-open 才自动打开。
     pub fn auto_open(&self) -> bool {
         self.port.is_some() && !self.no_open
+    }
+
+    /// 派生服务启动参数 (GUI / headless 共用, FR-8)。
+    pub fn startup(&self) -> Startup {
+        Startup {
+            cfg: SerialConfig {
+                port: self.port.clone().unwrap_or_default(),
+                baud: self.baud,
+                data_bits: self.data_bits,
+                parity: self.parity,
+                stop_bits: self.stop_bits,
+                flow: Flow::None,
+            },
+            auto_open: self.auto_open(),
+            addr: self.addr,
+        }
     }
 }
 
@@ -55,6 +76,8 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
     let mut addr_str = "127.0.0.1:8080".to_string();
     let mut list_ports = false;
     let mut no_open = false;
+    let mut headless = false;
+    let mut gui_flag = false;
 
     let mut i = 0usize;
     while i < args.len() {
@@ -93,11 +116,16 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
             }
             "--list-ports" => list_ports = true,
             "--no-open" => no_open = true,
+            "--headless" => headless = true,
+            "--gui" => gui_flag = true,
             other => return Err(format!("未知参数 \"{other}\"")),
         }
         i += 1;
     }
 
+    if headless && gui_flag {
+        return Err("--headless 与 --gui 互斥, 只能二选一".into());
+    }
     let addr: SocketAddr = addr_str.parse().map_err(|_| {
         format!("--addr 不是合法地址 (形如 127.0.0.1:8080): \"{addr_str}\"")
     })?;
@@ -111,6 +139,7 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
         addr,
         list_ports,
         no_open,
+        gui: !headless,
     })
 }
 
@@ -134,6 +163,8 @@ mod tests {
         assert_eq!(c.addr.to_string(), "127.0.0.1:8080");
         assert!(!c.list_ports);
         assert!(!c.no_open);
+        // FR-8: 默认 GUI
+        assert!(c.gui);
         // 未给 --port → 不自动打开 (FR-5)
         assert!(!c.auto_open());
     }
@@ -167,6 +198,19 @@ mod tests {
         assert!(parse(&["--port".into(), "".into()]).is_err()); // shell 剥引号后的空值
         assert!(parse_str("--wat").is_err());
         assert!(parse_str("COM1").is_err()); // 裸参数不允许
+    }
+
+    #[test]
+    fn headless_gui_flags() {
+        let c = parse_str("--headless").unwrap();
+        assert!(!c.gui);
+        let c = parse_str("--gui").unwrap();
+        assert!(c.gui);
+        let c = parse_str("--port COM1 --headless --baud 115200").unwrap();
+        assert!(!c.gui && c.auto_open());
+        // 互斥
+        assert!(parse_str("--headless --gui").is_err());
+        assert!(parse_str("--gui --headless").is_err());
     }
 
     #[test]

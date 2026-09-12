@@ -37,3 +37,16 @@ SerialHub 把重开做成一等状态机 (Closed/Opening/Open/Retry) 并暴露�
 ③ lastError 无错时为 `null` (JSON null, 非空串);
 ④ POST /api/config 空 body `{}` = 200 no-op (部分更新语义的自然推论), API 文档注明;
 ⑤ WS 消息边界 ≠ 串口帧边界 (RX 按读块广播), 页面侧协议栈须容忍任意分块 —— README 注明。
+
+## ADR-7 GUI 壳 = wry + tao + tray-icon, headless 分叉 (2026-09-12, 架构师)
+
+用户下令"客户端要有界面且可退到后台"。选型: wry (WebView2/WKWebView/webkit2gtk) + tao 窗口 +
+tray-icon 托盘, 内嵌**同一个** ui/index.html —— 不养第二套界面。tokio 服务在后台线程,
+事件循环在主线程, 经 channel 打通。默认 GUI, `--headless` 保住自动化测试与脚本场景
+(QA 套件随之改夹具, 属 QA 文件所有权)。关窗=隐藏到托盘, 真退出只在托盘菜单 —— 桥是常驻服务语义。
+
+## ADR-8 退出路径冗余 + /api/shutdown (2026-09-12, 架构师)
+
+UX Sprint2 发现托盘菜单在自动化注入下不可达 (真人是否可达待人工复核)。裁定: 优雅退出**不允许只有一条路** ——
+① 托盘菜单「退出」; ② 控制台页内「退出程序」按钮 → 新契约端点 `POST /api/shutdown`
+(与托盘退出同一停机序列); ③ 兜底任务管理器。GUI bind 失败改为 MessageBox 明示 (双击用户可见)。

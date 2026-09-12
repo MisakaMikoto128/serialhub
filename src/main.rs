@@ -1,34 +1,23 @@
-//! SerialHub 入口: CLI → HubState → 监督任务 → axum (HTTP+WS)。
+//! SerialHub 入口 (FR-8): CLI 解析 → 分派 GUI / headless 两种形态。
 //!
-//! 线程/任务模型一览:
-//! - 数据面: 2 条 OS 线程 (串口读/写, 见 serial.rs) + N 个 WS 客户端任务;
-//!   RX 经 broadcast 扇出, TX 经 mpsc 队列单写者串行;
-//! - 控制面: 监督任务 (状态机/自动重开) + axum 任务组 (/api/*, /ws);
-//! - 所有共享状态集中在 HubState + PortCtx, 无第二份真相。
+//! - GUI (默认): gui::run_gui —— 主线程 tao 事件循环 + wry WebView + 托盘,
+//!   tokio 服务在后台线程 (整合方式与坑见 gui.rs 模块头注释);
+//! - --headless: 旧行为, 纯 CLI 前台 (自动化测试与脚本场景, PLAT-4 无 GUI 依赖);
+//! - 字节通路与并发模型见 serial.rs / supervisor.rs 顶部注释。
 
 mod api;
 mod cli;
 mod config;
+mod gui;
 mod hub;
 mod serial;
+mod service;
 mod supervisor;
 
-use std::sync::Arc;
-use std::time::Duration;
-
-use tokio::net::TcpListener;
-use tokio::sync::broadcast;
-use tokio::sync::mpsc;
-
-use config::SerialConfig;
-use serial::PortCtx;
+use cli::Cli;
 use supervisor::HubCmd;
 
-/// broadcast 环形缓冲条数。慢客户端超过此量会被判 Lagged 丢旧帧 (不阻塞读线程)。
-const BROADCAST_CAP: usize = 1024;
-
-#[tokio::main]
-async fn main() {
+fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "-h" || a == "--help") {
         println!("{}", cli::USAGE);
@@ -57,70 +46,32 @@ async fn main() {
         return;
     }
 
-    let cfg = SerialConfig {
-        port: cli.port.clone().unwrap_or_default(),
-        baud: cli.baud,
-        data_bits: cli.data_bits,
-        parity: cli.parity,
-        stop_bits: cli.stop_bits,
-        flow: config::Flow::None,
-    };
-    let hub = Arc::new(hub::HubState::new(cfg));
-    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<HubCmd>();
-    let (bc_tx, _) = broadcast::channel::<Vec<u8>>(BROADCAST_CAP);
-    let ctx = PortCtx {
-        hub: hub.clone(),
-        bc_tx: bc_tx.clone(),
-        tx_slot: Arc::new(std::sync::Mutex::new(None)),
-    };
-
-    // 监督任务: 1s 重试间隔 (FR-3), 独立于数据面
-    tokio::spawn(supervisor::run_supervisor(
-        ctx.clone(),
-        cmd_rx,
-        Arc::new(serial::RealOpener),
-        Duration::from_secs(1),
-    ));
-
-    if cli.auto_open() {
-        let _ = cmd_tx.send(HubCmd::Open);
-    }
-
-    let app = api::App {
-        ctx,
-        cmd_tx,
-        index: include_str!("../ui/index.html"),
-    };
-
-    let listener = match TcpListener::bind(cli.addr).await {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("serialhub: 监听 {} 失败: {e}", cli.addr);
+    if cli.gui {
+        // GUI 模式: run_gui 只在"窗口创建之前"的失败路径返回 (如端口被占用);
+        // 事件循环启动后进程由事件循环接管。
+        if let Err(e) = gui::run_gui(cli) {
+            eprintln!("serialhub: {e}");
             std::process::exit(1);
         }
-    };
-    println!("SerialHub 就绪: http://{}  (Ctrl+C 退出)", cli.addr);
-    if let Some(p) = &cli.port {
-        println!(
-            "  串口: {p} @ {} {}{}{} (自动打开: {})",
-            cli.baud,
-            cli.data_bits,
-            cli.parity.as_char(),
-            cli.stop_bits,
-            if cli.no_open { "否" } else { "是" }
-        );
-    } else {
-        println!("  未指定 --port, 启动为未打开态, 请在 Web 控制台选择串口");
+        unreachable!("tao 事件循环不返回");
     }
 
-    let server = axum::serve(listener, api::router(app))
-        .with_graceful_shutdown(shutdown_signal());
-    if let Err(e) = server.await {
-        eprintln!("serialhub: 服务异常退出: {e}");
+    // headless 模式: 旧行为 —— 进程内 tokio 主任务 + Ctrl-C 优雅停机
+    if let Err(e) = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
+        .block_on(headless_service(cli))
+    {
+        eprintln!("serialhub: {e}");
         std::process::exit(1);
     }
 }
 
-async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+async fn headless_service(cli: Cli) -> Result<(), String> {
+    let startup = cli.startup();
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HubCmd>();
+    let (shutdown_tx, _) = tokio::sync::watch::channel(false);
+    // 端口被占用时 run_service 在 bind 处先失败, auto_open 指令不会发出 (不开串口直接退出)
+    service::run_service(startup, cmd_tx, cmd_rx, shutdown_tx, None).await
 }

@@ -195,7 +195,8 @@ def start_bridge():
     def _start(port_name=BRIDGE_COM, baud=115200, config="8N2",
                extra=None, wait=True) -> Bridge:
         http_port = free_tcp_port()
-        cmd = [str(BRIDGE_EXE)]
+        # Sprint 2 起二进制默认 GUI 模式; 套件要旧行为 (无窗口), 统一加 --headless
+        cmd = [str(BRIDGE_EXE), "--headless"]
         if port_name is not None:
             cmd += ["--port", port_name, "--baud", str(baud), "--config", config]
         cmd += ["--addr", f"{HTTP_HOST}:{http_port}"]

@@ -52,6 +52,10 @@ header .spacer{flex:1}
 .badge{display:inline-flex;align-items:center;gap:6px;padding:2px 10px;border-radius:999px;
   font-size:12px;border:1px solid currentColor;white-space:nowrap}
 .badge .dot{width:8px;height:8px;border-radius:50%;background:currentColor;flex:none}
+.quit-btn{border-color:var(--err);color:var(--err);font-size:12px;padding:3px 10px;border-radius:4px;background:var(--panel)}
+.quit-btn:hover:not(:disabled){background:var(--err-bg);border-color:var(--err);color:var(--err-ink)}
+.quit-btn.armed{background:var(--err);border-color:var(--err);color:#fff}
+.quit-btn:disabled{opacity:.6}
 .b-open{background:var(--ok-bg);color:var(--ok-ink)}
 .b-opening{background:var(--ok-bg);color:var(--ok-ink);animation:blink 1s steps(2,start) infinite}
 .b-retry{background:var(--warn-bg);color:var(--warn-ink)}
@@ -143,6 +147,7 @@ footer{max-width:1440px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
   <h1><span class="brand-mark"></span>SerialHub<span class="sub">串口 &harr; WebSocket 桥接控制台</span></h1>
   <span class="spacer"></span>
   <span id="wsBadge" class="badge b-closed"><span class="dot"></span><span id="wsBadgeText">WS 未连接</span></span>
+  <button id="btnQuit" type="button" class="quit-btn" title="优雅停止 SerialHub 服务并退出程序 (含托盘/串口清理)">退出程序</button>
 </header>
 
 <main>
@@ -250,6 +255,7 @@ const encoder = new TextEncoder();
 
 let phase = "closed";
 let ws = null;
+let wsGen = 0; // FIX-11: WS 代次 (迟到事件守卫)
 let paused = false;
 let viewMode = "ascii";   // ascii | hex
 let sendMode = "text";    // text | hex
@@ -580,23 +586,31 @@ function wsUrl() {
   return proto + "://" + location.host + "/ws";
 }
 
+/* FIX-11: WS 单连接状态机。旧实现的守卫放过 CLOSING 态 (服务端仍计为客户端),
+   且迟到 onclose 会把新 socket 置 null → 孤儿连接 + 重连 = 双 WS (UX: GUI clients 恒 2)。
+   现版: ① readyState!==3 (CONNECTING/OPEN/CLOSING) 一律复用; ② 每条 socket 持代次,
+   迟到的旧事件不碰当前状态; ③ 只有当前 socket 的 onclose 才置 null 并安排重连。 */
 function connectWs() {
-  if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
+  if (ws && ws.readyState !== 3) return;
+  const gen = ++wsGen;
   try { ws = new WebSocket(wsUrl()); } catch (_) { scheduleReconnect(); return; }
   ws.binaryType = "arraybuffer";
 
   ws.onopen = () => {
+    if (gen !== wsGen) return;
     $("wsBadge").classList.remove("b-closed");
     $("wsBadge").classList.add("b-open");
     $("wsBadgeText").textContent = "WS 已连接";
     poll();
   };
   ws.onmessage = (ev) => {
+    if (gen !== wsGen) return;
     const data = ev.data;
     if (data instanceof ArrayBuffer && data.byteLength) onRxFrames(new Uint8Array(data));
     else if (typeof data === "string" && data.length) onRxFrames(encoder.encode(data));
   };
   ws.onclose = () => {
+    if (gen !== wsGen) return;
     setBadge($("wsBadge"), $("wsBadgeText"), "closed");
     $("wsBadge").classList.remove("b-open");
     $("wsBadge").classList.add("b-closed");
@@ -605,7 +619,7 @@ function connectWs() {
     scheduleReconnect();
     poll();
   };
-  ws.onerror = () => { try { ws && ws.close(); } catch (_) {} };
+  ws.onerror = () => { if (gen !== wsGen) return; try { ws && ws.close(); } catch (_) {} };
 }
 
 function scheduleReconnect() {
@@ -683,6 +697,31 @@ function toggleSeg(onId, offId) {
 function updatePlaceholder() {
   $("inSend").placeholder = sendMode === "hex" ? "HEX 字节, 如: AA BB 01" : "输入内容, 回车发送";
 }
+
+/* ================= 退出 (FR-4⑤ / ADR-8) =================
+   与托盘「退出」完全同一优雅停机序列 (POST /api/shutdown → watch → Close →
+   stop_active → Stopped → 进程退出); 两段确认防误触, 确认窗 3s。 */
+$("btnQuit").addEventListener("click", async () => {
+  const b = $("btnQuit");
+  if (b.dataset.armed !== "1") {
+    b.dataset.armed = "1";
+    b.textContent = "确认退出?";
+    b.classList.add("armed");
+    setTimeout(() => {
+      if (b.dataset.armed === "1") {
+        b.dataset.armed = "0";
+        b.textContent = "退出程序";
+        b.classList.remove("armed");
+      }
+    }, 3000);
+    return;
+  }
+  b.dataset.armed = "0";
+  b.disabled = true;
+  b.textContent = "正在退出…";
+  try { await fetch("/api/shutdown", { method: "POST" }); } catch (_) {}
+  // 服务优雅停机中, 页面随进程一起结束, 无需恢复 UI
+});
 
 /* ================= 启动 ================= */
 setBadge($("wsBadge"), $("wsBadgeText"), "closed");

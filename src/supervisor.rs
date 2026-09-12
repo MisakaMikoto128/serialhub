@@ -56,6 +56,7 @@ pub async fn run_supervisor(
                     hub.clear_last_error();
                     let (user_closed, err) = monitor(sess, &mut cmd_rx).await;
                     ctx.clear_tx(); // 会话已结束, 后续客户端帧直接丢弃
+                    ctx.clear_active_stop(); // 会话 stop 标志注销
                     if let Some(e) = err {
                         hub.set_last_error(e);
                     }
@@ -203,6 +204,7 @@ mod tests {
             hub: hub.clone(),
             bc_tx: broadcast::channel(16).0,
             tx_slot: Arc::new(StdMutex::new(None)),
+            active_stop: Arc::new(StdMutex::new(None)),
         };
         (hub, ctx)
     }

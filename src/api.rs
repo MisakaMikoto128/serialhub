@@ -29,6 +29,8 @@ use crate::supervisor::HubCmd;
 pub struct App {
     pub ctx: PortCtx,
     pub cmd_tx: UnboundedSender<HubCmd>,
+    /// 停机开关 (ADR-8): /api/shutdown 与托盘「退出」共用同一 watch。
+    pub shutdown_tx: tokio::sync::watch::Sender<bool>,
     pub index: &'static str,
 }
 
@@ -40,6 +42,7 @@ pub fn router(app: App) -> Router {
         .route("/api/config", post(set_config))
         .route("/api/open", post(open))
         .route("/api/close", post(close))
+        .route("/api/shutdown", post(shutdown))
         .route("/ws", get(ws_upgrade))
         .with_state(app)
 }
@@ -145,6 +148,14 @@ async fn close(State(app): State<App>) -> Response {
     ok()
 }
 
+/// FR-4⑤/ADR-8: 优雅停机整进程 —— 与托盘「退出」完全同一序列
+/// (watch → axum 优雅退出 → Close → stop_active → Stopped → 进程退出)。
+/// 退出路径必须有冗余, 不能只依赖托盘菜单 (Sprint2 UX P1-1)。
+async fn shutdown(State(app): State<App>) -> Response {
+    let _ = app.shutdown_tx.send(true);
+    ok()
+}
+
 fn ok() -> Response {
     Json(json!({"ok": true})).into_response()
 }
@@ -171,6 +182,7 @@ async fn client_loop(socket: WebSocket, app: App) {
 
     let (mut sink, mut stream) = socket.split();
     let mut bsub = app.ctx.bc_tx.subscribe();
+    let mut sd = app.shutdown_tx.subscribe(); // 停机时主动断开 WS, 优雅停机才不会被长连接卡住
     loop {
         tokio::select! {
             // 上行: 客户端帧 → TX 队列 (单写者 FIFO 串行写串口)
@@ -201,6 +213,8 @@ async fn client_loop(socket: WebSocket, app: App) {
                 Err(RecvError::Lagged(_)) => continue, // 慢客户端丢旧帧, 保持连接
                 Err(RecvError::Closed) => break,       // 广播源消失 (进程退出)
             },
+            // 停机: 服务端主动断开本 WS (否则长连接会卡死 axum 优雅停机)
+            _ = sd.changed() => break,
         }
     }
 }

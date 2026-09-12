@@ -29,13 +29,23 @@ websocket-serial-server —— 2021 年停更, JSON+base64 包帧。
   契约裁定 (ADR-5): ① status 恰 9 字段 phase/port/baud/config/clients/rxBytes/txBytes/
   lastError/uptimeSec, **不含 flow** (P2 再议); ② uptimeSec = **进程运行时长**;
   ③ POST 成功 `{"ok":true}`, 失败 400 + `{"ok":false,"error":"..."}`;
-  ④ `/api/open` 在已打开态为 **no-op** (热改必须 close→config→open)。
+  ④ `/api/open` 在已打开态为 **no-op** (热改必须 close→config→open);
+  ⑤ (ADR-8) `POST /api/shutdown` 优雅停机整进程 —— 退出不能只依赖托盘菜单 (Sprint2 UX P1-1)。
 - **FR-5 CLI**: `serialhub --port COM1 --baud 115200 --config 8N2 --addr 127.0.0.1:8080
   [--list-ports] [--no-open]`。未给 `--port` 时启动为"未打开"态, 由 UI 驱动。
 - **FR-6 内嵌控制台**: 单页 (内嵌进二进制, include_str!), 零外部依赖:
   连接面板 (扫口/参数/打开关闭/状态机徽章/计数器)、终端区 (HEX 与 ASCII 双视图、
   暂停/清空、自动滚动)、发送区 (HEX 或文本, 回车发送)。
 - **FR-7 崩溃面**: 任何客户端断开/乱码帧/串口错误都不得 panic; 错误进状态接口。
+
+- **FR-8 桌面客户端形态 (GUI 壳)**:
+  - 默认启动为**原生窗口** (WebView 内嵌现有控制台, 同一 ui/index.html, 不做第二套界面);
+  - **关闭窗口 = 退到系统托盘**, 桥继续跑; 首次隐藏时托盘气泡提示一次;
+  - 托盘菜单: 显示主窗口 / 在浏览器打开控制台 / 打开串口 / 关闭串口 / 退出 (唯一真退出入口);
+  - 托盘图标随状态机变 (Open=绿 / Retry=琥珀 / Closed=灰), 悬停 tooltip 显示相位与端口;
+  - `--headless` 走旧行为 (纯 CLI 前台, 无窗口无托盘) —— 自动化测试与脚本场景专用;
+  - 地址被占用时启动报错退出 (错误含"端口被占用"字样), 不静默;
+  - 已打开态下窗口刷新/重连不丢终端历史 (内嵌同一套前端逻辑, 天然满足)。
 
 ## 3. UI 需求 (UI)
 
@@ -49,7 +59,9 @@ websocket-serial-server —— 2021 年停更, JSON+base64 包帧。
 
 - PLAT-1 Windows 10/11 (本机验证), Linux/macOS 编译通过 (CI 配置文件齐, 本机无法验证的注明)。
 - PLAT-2 现代浏览器 (Chromium/Firefox/Safari) 的 WebSocket 二进制帧。
-- PLAT-3 虚拟串口对 (ELTIMA/com0com) 与真实 USB-UART (CH340) 均须工作。
+- PLAT-3 虚拟串口对 (ELTIMa/com0com) 与真实 USB-UART (CH340) 均须工作。
+- PLAT-4 GUI 壳 (FR-8): Windows 用 WebView2 (Win11 自带); Linux 需 webkit2gtk、macOS 用
+  WKWebView —— 非 Windows 平台仅要求可编译, CI 注明依赖; headless 模式无任何 GUI 依赖。
 
 ## 5. 性能 (PERF, P1)
 

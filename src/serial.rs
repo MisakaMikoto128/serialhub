@@ -36,6 +36,9 @@ pub struct PortCtx {
     pub bc_tx: broadcast::Sender<Vec<u8>>,
     /// 当前会话的 TX 队列发送端; None = 串口未打开, 客户端帧直接丢弃。
     pub tx_slot: Arc<Mutex<Option<StdSender<Vec<u8>>>>>,
+    /// 当前会话的 stop 标志 (FR-8 干净退出用): GUI 退出时置 true,
+    /// 读/写线程在 ≤150ms 内自行退出并释放串口; 无会话时为 None。
+    pub active_stop: Arc<Mutex<Option<Arc<AtomicBool>>>>,
 }
 
 impl PortCtx {
@@ -45,6 +48,22 @@ impl PortCtx {
 
     pub fn clear_tx(&self) {
         *lock_mutex(&self.tx_slot) = None;
+    }
+
+    /// 会话建立时登记 stop 标志; 会话结束由监督任务清除。
+    pub fn set_active_stop(&self, stop: Arc<AtomicBool>) {
+        *lock_mutex(&self.active_stop) = Some(stop);
+    }
+
+    pub fn clear_active_stop(&self) {
+        *lock_mutex(&self.active_stop) = None;
+    }
+
+    /// 请求当前会话的读/写线程退出 (幂等; 无会话时为空操作)。
+    pub fn stop_active(&self) {
+        if let Some(stop) = &*lock_mutex(&self.active_stop) {
+            stop.store(true, Ordering::Relaxed);
+        }
     }
 
     /// 串口未打开或写线程已死 → 直接丢弃返回 false (绝不 panic)。
@@ -128,6 +147,7 @@ impl PortOpener for RealOpener {
                 .map_err(|e| format!("启动串口写线程失败: {e}"))?;
         }
 
+        ctx.set_active_stop(stop.clone()); // 供干净退出路径 (FR-8) 置位
         Ok(PortSession { stop, events: ev_rx })
     }
 }
@@ -244,6 +264,7 @@ mod tests {
             hub: Arc::new(HubState::new(SerialConfig::default())),
             bc_tx: broadcast::channel(16).0,
             tx_slot: Arc::new(Mutex::new(None)),
+            active_stop: Arc::new(Mutex::new(None)),
         };
         assert!(!ctx.send_to_port(b"x")); // 未安装 = 丢弃
         ctx.set_tx(tx);
