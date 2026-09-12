@@ -1,0 +1,13 @@
+[package]
+name = "serialhub"
+version = "0.1.0"
+edition = "2021"
+description = "SerialHub — 串口 <-> WebSocket 桥接, 跨平台单二进制 + 内嵌 Web 控制台"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["ws"] }
+serialport = "4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures-util = "0.3"
