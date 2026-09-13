@@ -56,6 +56,9 @@ struct Inner {
     rx_bytes: u64,
     tx_bytes: u64,
     last_error: Option<String>,
+    /// ADR-15①: 当次会话内重试计数 —— 每次打开失败 (retry 迁移) +1,
+    /// 成功打开归 0; 用户手动 close 归 0。只有监督任务写。
+    retries: u32,
 }
 
 pub struct HubState {
@@ -75,6 +78,7 @@ impl HubState {
                 rx_bytes: 0,
                 tx_bytes: 0,
                 last_error: None,
+                retries: 0,
             }),
         }
     }
@@ -150,9 +154,26 @@ impl HubState {
         w(&self.inner).last_error = None;
     }
 
+    // ---- 重试计数 (ADR-15①, 只有监督任务调用) ----
+
+    /// 打开尝试失败 → Retry 迁移时 +1 (饱和, u32 不回绕)。
+    pub fn retry_inc(&self) {
+        let mut g = w(&self.inner);
+        g.retries = g.retries.saturating_add(1);
+    }
+
+    pub fn retries(&self) -> u32 {
+        r(&self.inner).retries
+    }
+
+    /// 成功打开归 0; 用户手动 close 归 0。
+    pub fn clear_retries(&self) {
+        w(&self.inner).retries = 0;
+    }
+
     // ---- /api/status 投影 ----
 
-    /// 字段名与字段集合是 QA 契约: 恰好 9 个字段, 一个不多一个不少。
+    /// 字段名与字段集合是 QA 契约: 恰好 12 个字段, 一个不多一个不少 (ADR-15① 修订)。
     pub fn status_json(&self) -> StatusJson {
         let g = r(&self.inner);
         StatusJson {
@@ -166,6 +187,7 @@ impl HubState {
             rx_bytes: g.rx_bytes,
             tx_bytes: g.tx_bytes,
             last_error: g.last_error.clone(),
+            retries: g.retries,
             uptime_sec: self.started.elapsed().as_secs(),
         }
     }
@@ -189,6 +211,8 @@ pub struct StatusJson {
     pub tx_bytes: u64,
     #[serde(rename = "lastError")]
     pub last_error: Option<String>,
+    /// ADR-15①: 当次会话内重试计数 (打开失败 +1, 成功打开/手动 close 归 0)。
+    pub retries: u32,
     #[serde(rename = "uptimeSec")]
     pub uptime_sec: u64,
 }
@@ -210,7 +234,7 @@ mod tests {
         let hub = hub_with_com1();
         let v = serde_json::to_value(hub.status_json()).unwrap();
         let obj = v.as_object().unwrap();
-        // 契约 (ADR-11 修订 ADR-9①): 恰好这 11 个字段 (QA 按字段名断言)
+        // 契约 (ADR-15① 修订 ADR-11): 恰好这 12 个字段 (QA 按字段名断言)
         let want: HashSet<&str> = [
             "phase",
             "port",
@@ -222,6 +246,7 @@ mod tests {
             "rxBytes",
             "txBytes",
             "lastError",
+            "retries",
             "uptimeSec",
         ]
         .into_iter()
@@ -238,6 +263,7 @@ mod tests {
         assert_eq!(v["rxBytes"], 0);
         assert_eq!(v["txBytes"], 0);
         assert!(v["lastError"].is_null());
+        assert_eq!(v["retries"], 0);
         assert_eq!(v["uptimeSec"], 0);
     }
 

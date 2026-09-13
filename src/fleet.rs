@@ -175,6 +175,7 @@ impl Bridge {
             "rxRate": r1(rx_rate),
             "txRate": r1(tx_rate),
             "lastError": s.last_error,
+            "retries": s.retries, // ADR-15①: 当次会话内重试计数 (契约 13→14 字段)
             "uptimeSec": self.created.elapsed().as_secs(),
             "autoOpen": self.auto_open.load(Ordering::Relaxed),
         })
@@ -2300,6 +2301,65 @@ mod tests {
         let (_, resp) = http_req(t.addr, "GET", "/api/fleet/b1", None).await;
         let v: Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(v["bridge"]["maxClients"], 0);
+        t.shutdown().await;
+    }
+
+    /// ADR-15①: fleet 桥对象契约字段集 13→14 —— 原 13 契约字段 (与 QA conftest
+    /// FLEET_ROW_FIELDS 同源) + retries (u32)。列表行与单桥详情同构, 必须都回显;
+    /// 除已声明的内部字段 (running/autoOpen) 外不得缺字段, 也不得混入未裁定字段。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fleet_bridge_object_contract_14_fields() {
+        use std::collections::HashSet;
+        let t = spawn_mgr(None, None).await;
+        fleet_create_ok(
+            t.addr,
+            r#"{"name":"契约桥","listen":"127.0.0.1:0","autoOpen":false}"#,
+        )
+        .await;
+        let want: HashSet<&str> = [
+            "id",
+            "name",
+            "serial",
+            "listen",
+            "phase",
+            "clients",
+            "rxBytes",
+            "txBytes",
+            "rxRate",
+            "txRate",
+            "lastError",
+            "uptimeSec",
+            "maxClients",
+            "retries", // ADR-15① 新增 (13→14)
+        ]
+        .into_iter()
+        .collect();
+        let known_extra: HashSet<&str> = ["running", "autoOpen"].into_iter().collect();
+        let check = |row: &Value, where_: &str| {
+            let got: HashSet<&str> =
+                row.as_object().unwrap().keys().map(|s| s.as_str()).collect();
+            let missing: Vec<_> = want.difference(&got).collect();
+            assert!(missing.is_empty(), "{where_} 缺契约字段 {missing:?}: {row}");
+            let unknown: Vec<_> = got
+                .difference(&want)
+                .filter(|k| !known_extra.contains(**k))
+                .collect();
+            assert!(
+                unknown.is_empty(),
+                "{where_} 混入未裁定字段 {unknown:?} (契约膨胀需走 ADR): {row}"
+            );
+            assert_eq!(
+                row["retries"].as_u64(),
+                Some(0),
+                "{where_} retries 须为非负整数 (初值 0): {row}"
+            );
+        };
+        let (_, resp) = http_req(t.addr, "GET", "/api/fleet", None).await;
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        check(&v["bridges"][0], "列表行");
+        let (_, resp) = http_req(t.addr, "GET", "/api/fleet/b1", None).await;
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        check(&v["bridge"], "单桥详情");
         t.shutdown().await;
     }
 

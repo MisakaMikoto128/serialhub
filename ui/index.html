@@ -125,6 +125,17 @@ main{max-width:1200px;margin:0 auto;padding:var(--gap)}
 .berr{margin-top:0;font-size:12px;color:var(--err-ink);background:var(--err-bg);
   border:1px solid var(--err);border-radius:4px;padding:6px 8px;word-break:break-all;display:none}
 .berr.show{display:block}
+/* ADR-15②: retry 态错误行琥珀变体 (大白话重连提示), 后端原话为次级灰字 */
+.berr.warn{background:var(--warn-bg);border-color:var(--warn);color:var(--warn-ink)}
+.berr.ok{background:var(--ok-bg);border-color:var(--ok);color:var(--ok-ink)}
+.berr .sub{margin-top:2px;font-size:11px;color:var(--muted)}
+/* retry 态流程图: 线段半透明 + 断续闪动 (数据不通, 桥仍在自动接) */
+.bcard.retrying .wire line{opacity:.35;animation:wireGap 1.2s steps(2,start) infinite}
+@keyframes wireGap{50%{opacity:.08}}
+/* 恢复横幅: retry→open 瞬间卡片内一次性出现, ~3s 自动消失 (页内元素, 不弹窗不抢焦点) */
+.brecov{display:none;align-items:center;gap:6px;font-size:12px;color:var(--ok-ink);
+  background:var(--ok-bg);border:1px solid var(--ok);border-radius:4px;padding:5px 8px}
+.brecov.show{display:flex}
 
 /* 空状态 */
 .emptybox{border:1px dashed var(--border-strong);border-radius:var(--radius);
@@ -350,6 +361,7 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
       <button type="button" class="act-cfg" title="打开这座桥的管理抽屉">设置</button>
       <button type="button" class="act-del danger" title="删除这座桥">删除</button>
     </div>
+    <div class="brecov" role="status">串口已恢复</div>
     <div class="flow">
       <div class="node serial" title="这座桥接的串口设备"><span class="cap">串口</span><b class="n-serial"></b></div>
       <svg class="wire" viewBox="0 0 44 26" width="44" height="26" aria-hidden="true">
@@ -518,6 +530,9 @@ const C_TX = (CSS.getPropertyValue("--tx") || "#0b6aa8").trim();
 let bridges = [];                /* 最近一次 /api/fleet 的桥列表 */
 const cards = new Map();         /* id → 卡片元素引用 */
 const hist  = new Map();         /* id → {rx:[],tx:[]} 速率历史 (火花线) */
+const wasRetry = new Map();      /* id → 自上次打开成功以来经历过 retry (恢复横幅判定, ADR-15②) */
+const recoveries = new Map();    /* id → {time} 恢复信息展示窗口 (错误行短暂显示恢复时刻) */
+const recTimers = new Map();     /* id → 恢复横幅 3s 收起定时器 */
 let lastSparkPush = 0;
 let connOk = true;
 let drawerId = null, lastFocus = null, activeTab = "cfg";
@@ -627,6 +642,7 @@ function buildCard(id) {
     name: root.querySelector(".bname"),
     badge: root.querySelector(".badge"),
     phase: root.querySelector(".bphase"),
+    recov: root.querySelector(".brecov"),
     toggle: root.querySelector(".act-toggle"),
     cfgBtn: root.querySelector(".act-cfg"),
     del: root.querySelector(".act-del"),
@@ -670,6 +686,7 @@ function updateCard(els, b) {
   els.listen.textContent = b.listen || "—";
   els.listen.title = b.listen || "";
   setBadge(els.badge, els.phase, b.phase);
+  els.root.classList.toggle("retrying", b.phase === "retry");
   const starting = b.phase === "closed";
   els.toggle.textContent = starting ? "启动" : "停止";
   els.toggle.classList.toggle("primary", starting);
@@ -685,8 +702,27 @@ function updateCard(els, b) {
   els.sTx.innerHTML = sparkSvg(h.tx, C_TX);
   els.clients.textContent = fmtBytes(b.clients);
   els.up.textContent = fmtUptime(b.uptimeSec);
-  if (b.lastError) { els.err.textContent = "上次出错: " + b.lastError; els.err.classList.add("show"); }
-  else { els.err.classList.remove("show"); els.err.textContent = ""; }
+  /* 错误行三态 (ADR-15②): retry 大白话 (+原话灰字) / 恢复窗口 / 常规上次出错 */
+  const rec = recoveries.get(b.id);
+  if (b.phase === "retry") {
+    const n = Number(b.retries);
+    const line = "串口已断开，正在自动重连" + (Number.isFinite(n) && n > 0 ? " (第 " + n + " 次)" : "") + "…";
+    els.err.classList.add("show", "warn");
+    els.err.classList.remove("ok");
+    els.err.innerHTML = "<div>" + esc(line) + "</div>" +
+      (b.lastError ? '<div class="sub">' + esc(b.lastError) + "</div>" : "");
+  } else if (rec) {
+    els.err.classList.add("show", "ok");
+    els.err.classList.remove("warn");
+    els.err.innerHTML = "<div>串口已恢复 · " + esc(rec.time) + "</div>";
+  } else if (b.lastError) {
+    els.err.classList.remove("warn", "ok");
+    els.err.textContent = "上次出错: " + b.lastError;
+    els.err.classList.add("show");
+  } else {
+    els.err.classList.remove("show", "warn", "ok");
+    els.err.textContent = "";
+  }
 }
 function syncCards() {
   const seen = new Set();
@@ -699,6 +735,8 @@ function syncCards() {
   for (const [id, e] of cards) {
     if (!seen.has(id)) {
       e.root.remove(); cards.delete(id); hist.delete(id);
+      clearTimeout(recTimers.get(id)); recTimers.delete(id);
+      recoveries.delete(id); wasRetry.delete(id);
       if (drawerId === id) { closeDrawer(); notice("这座桥已被删除", "err"); }
     }
   }
@@ -709,12 +747,42 @@ function syncCards() {
   $("emptyBox").hidden = bridges.length > 0;
 }
 
+/* ================= 恢复横幅 (ADR-15②) =================
+   retry→open 的瞬间 (允许中间隔一轮连接中), 该卡片内一次性出现「串口已恢复」
+   ~3s 自动消失; 页内元素, 不弹窗不抢焦点; 恢复时刻同步进错误行位置短暂展示。 */
+function detectRecoveries() {
+  for (const b of bridges) {
+    if (b.phase === "retry") wasRetry.set(b.id, true);
+    else if (b.phase === "closed") wasRetry.delete(b.id);
+    if (wasRetry.get(b.id) && b.phase === "open") {
+      wasRetry.delete(b.id);
+      triggerRecovery(b.id);
+    }
+  }
+}
+function triggerRecovery(id) {
+  const e = cards.get(id);
+  if (!e) return;
+  const d = new Date(), p2 = (x) => String(x).padStart(2, "0");
+  recoveries.set(id, { time: p2(d.getHours()) + ":" + p2(d.getMinutes()) + ":" + p2(d.getSeconds()) });
+  e.recov.classList.add("show");
+  clearTimeout(recTimers.get(id));
+  recTimers.set(id, setTimeout(() => {
+    recTimers.delete(id);
+    recoveries.delete(id);
+    e.recov.classList.remove("show");
+    const b = bridges.find((x) => x.id === id);
+    if (b) updateCard(e, b); /* 到期即刻回归常规错误行, 不等下一轮轮询 */
+  }, 3000));
+}
+
 /* ================= 轮询 ================= */
 async function poll() {
   try {
     const j = await api("/api/fleet");
     connOk = true; /* 恢复后横幅自动消失 (静默), 不打扰 */
     bridges = Array.isArray(j.bridges) ? j.bridges : [];
+    detectRecoveries();
     pushSpark();
     syncCards();
     syncDrawerLive();

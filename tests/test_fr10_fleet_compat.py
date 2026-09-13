@@ -4,7 +4,7 @@
 契约 (spec FR-10h + 任务契约 + ADR-11):
 - 旧 CLI (--port COM1 --baud --config --addr) 起进程 → GET /api/fleet 恰见一座桥,
   serial/phase 回显正确, 数据面 listen = 旧地址 (旧 /ws 必须同端口可用);
-- 旧 GET /api/status 仍工作且契约不变 (恰 11 字段, ADR-11);
+- 旧 GET /api/status 仍工作且契约不变 (恰 12 字段, ADR-11 + ADR-15① 随动修订 2026-09-13);
 - 旧数据面 /ws 双向回环不回归 (FR-1 语义抽样)。
 
 现有 29 条测试零改动即应全绿 —— 本文件只做"FR-10 落地后旧面不破"的断面复核。
@@ -41,10 +41,11 @@ def test_fr10h_legacy_single_bridge_maps_to_one_fleet_row(start_bridge, fleet_re
     b = start_bridge(cwd=tempfile.mkdtemp(prefix="serialhub_fr10_compat_"))  # 旧 CLI 单桥
     b.wait_phase("open", timeout=15)
 
-    # 旧端点: /api/status 契约不变 (恰 11 字段, ADR-11)
+    # 旧端点: /api/status 契约不变 (恰 12 字段, ADR-11 + ADR-15① 随动修订)
     code, st = b.get("/api/status")
     assert code == 200, f"旧 GET /api/status -> {code}"
     assert set(st) == STATUS_FIELDS, f"旧 status 契约被 FR-10 破坏: {sorted(st)}"
+    assert st["retries"] == 0, f"open 兼容桥 retries 应为 0 (ADR-15①): {st!r}"
 
     # 新控制面视角: 旧单桥参数 ⇒ 恰一座兼容桥
     rows = fleet_rows(b)

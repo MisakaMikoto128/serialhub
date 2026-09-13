@@ -16,11 +16,12 @@ from conftest import (STATUS_FIELDS, join_collectors, read_exactly,
 
 
 def test_fr4_status_contract(start_bridge, make_peer):
-    """/api/status 恰 11 字段 (ADR-11 修订 ADR-9 ①), 初始计数与相位合理, uptimeSec 随进程时间增长 (②)。"""
+    """/api/status 恰 12 字段 (ADR-11 修订 ADR-9 ①; ADR-15① Sprint 5 随动修订 11→12 增 retries),
+    初始计数与相位合理, uptimeSec 随进程时间增长 (②)。"""
     b = start_bridge()
     st = b.status()
     assert set(st.keys()) == STATUS_FIELDS, (
-        f"ADR-11 字段集合不符: 多 {set(st) - STATUS_FIELDS}, "
+        f"ADR-11/ADR-15① 字段集合不符: 多 {set(st) - STATUS_FIELDS}, "
         f"少 {STATUS_FIELDS - set(st)}")
     assert isinstance(st["phase"], str)
     assert isinstance(st["port"], str) and st["port"] == "COM1"
@@ -31,6 +32,8 @@ def test_fr4_status_contract(start_bridge, make_peer):
         f"maxClients 默认应为 0 (不限, ADR-9 ①): 实得 {st['maxClients']!r}"
     assert st["rxBytes"] == 0 and st["txBytes"] == 0, \
         f"初始计数应为 0: rxBytes={st['rxBytes']}, txBytes={st['txBytes']}"
+    assert st["retries"] == 0, \
+        f"初始 retries 应为 0 (ADR-15①): 实得 {st['retries']!r}"
     assert st["lastError"] in (None, ""), f"无错时 lastError={st['lastError']!r}"
     assert isinstance(st["uptimeSec"], (int, float)) and st["uptimeSec"] >= 0
 

@@ -8,6 +8,8 @@
 //!                      +---- Close ---->+---- Close ---> Closed
 //!
 //! 重试间隔默认 1s; 测试通过 retry_delay 参数注入更短的值。
+//! ADR-15①: 每次尝试失败进入 Retry 迁移时 hub.retries +1; 成功打开或用户
+//! 手动 Close 归 0 —— UI 据此显示「正在自动重连 (第 n 次)」。
 //! opener 做成 trait 是为了单测可以注入假串口 (真实串口状态机无法确定性复现)。
 
 use std::sync::atomic::Ordering;
@@ -54,6 +56,7 @@ pub async fn run_supervisor(
                 Ok(sess) => {
                     hub.set_phase(Phase::Open);
                     hub.clear_last_error();
+                    hub.clear_retries(); // ADR-15①: 成功打开归 0
                     let (user_closed, err) = monitor(sess, &mut cmd_rx).await;
                     ctx.clear_tx(); // 会话已结束, 后续客户端帧直接丢弃
                     ctx.clear_active_stop(); // 会话 stop 标志注销
@@ -61,18 +64,22 @@ pub async fn run_supervisor(
                         hub.set_last_error(e);
                     }
                     if user_closed {
-                        break; // → Closed, 回到等待指令
+                        break; // → Closed (retries 已在成功打开时归 0), 回到等待指令
                     }
-                    // 异常断开 → Retry, 1s 后重开 (FR-3)
+                    // 异常断开 → Retry, 1s 后重开 (FR-3); 本次尝试失败计入重试次数 (ADR-15①)
+                    hub.retry_inc();
                     hub.set_phase(Phase::Retry);
                     if !wait_retry(&mut cmd_rx, retry_delay).await {
+                        hub.clear_retries(); // Close 打断重试等待 = 用户手动关闭, 归 0
                         break;
                     }
                 }
                 Err(e) => {
                     hub.set_last_error(e);
+                    hub.retry_inc(); // ADR-15①: 打开失败 → Retry 迁移, 计数 +1
                     hub.set_phase(Phase::Retry);
                     if !wait_retry(&mut cmd_rx, retry_delay).await {
+                        hub.clear_retries(); // Close 打断重试等待 = 用户手动关闭, 归 0
                         break;
                     }
                 }
@@ -146,11 +153,13 @@ mod tests {
 
     /// 假串口打开器, 四种行为可组合:
     /// - fail: 直接打开失败 (对应设备被占用/不存在)
+    /// - fail_times: 前 N 次调用失败, 之后成功 (ADR-15① 连败→恢复的确定性注入)
     /// - stuck_ms: 打开动作阻塞指定毫秒 (用于确定性地观察 Opening 相位)
     /// - die: 打开"成功"但会话立刻以错误退出 (对应设备刚打开就掉线)
     /// - 否则: 会话存活, 直到收到 stop 才干净退出
     struct FakeOpener {
         fail: bool,
+        fail_times: usize,
         stuck_ms: u64,
         die: bool,
         calls: AtomicUsize,
@@ -158,17 +167,22 @@ mod tests {
 
     impl FakeOpener {
         fn new(fail: bool, stuck_ms: u64, die: bool) -> Self {
-            Self { fail, stuck_ms, die, calls: AtomicUsize::new(0) }
+            Self { fail, fail_times: 0, stuck_ms, die, calls: AtomicUsize::new(0) }
+        }
+
+        /// 前 fail_times 次打开失败, 之后成功且会话存活 (连败 n 次后恢复)。
+        fn fail_first(fail_times: usize) -> Self {
+            Self { fail: false, fail_times, stuck_ms: 0, die: false, calls: AtomicUsize::new(0) }
         }
     }
 
     impl PortOpener for FakeOpener {
         fn open(&self, _cfg: &SerialConfig, _ctx: &PortCtx) -> Result<PortSession, String> {
-            self.calls.fetch_add(1, Ordering::Relaxed);
+            let n = self.calls.fetch_add(1, Ordering::Relaxed);
             if self.stuck_ms > 0 {
                 std::thread::sleep(Duration::from_millis(self.stuck_ms));
             }
-            if self.fail {
+            if self.fail || n < self.fail_times {
                 return Err("模拟: 打开失败 (设备被占用)".into());
             }
             let stop = Arc::new(AtomicBool::new(false));
@@ -330,5 +344,59 @@ mod tests {
         cmd_tx.send(HubCmd::Close).unwrap();
         // 不应等满 5s
         assert!(wait_phase(&hub, Phase::Closed, Duration::from_millis(500)).await);
+    }
+
+    /// ADR-15①: 每次 retry 迁移 retries +1 —— 假打开器连败 3 次 → retries==3;
+    /// 第 4 次尝试成功打开 → 归 0; /api/status 投影与计数同源回显。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn retries_increment_per_failed_attempt_and_reset_on_success() {
+        let (hub, ctx) = test_ctx();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        tokio::spawn(run_supervisor(
+            ctx,
+            cmd_rx,
+            Arc::new(FakeOpener::fail_first(3)),
+            // 重试等待拉长: 第 3 次失败后有 400ms 稳定窗口观察 retries==3
+            Duration::from_millis(400),
+        ));
+        cmd_tx.send(HubCmd::Open).unwrap();
+        // 连败 3 次: 每次打开失败 → Retry 迁移 → 计数 +1
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while hub.retries() < 3 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "3 次连败内 retries 未递增到 3 (现 {})",
+                hub.retries()
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(hub.retries(), 3, "连败恰 3 次, 计数应为 3");
+        assert_eq!(hub.status_json().retries, 3, "/api/status 投影须回显同一计数");
+        assert_eq!(hub.phase(), Phase::Retry);
+        // 第 4 次尝试成功打开 → 归 0
+        assert!(wait_phase(&hub, Phase::Open, Duration::from_secs(3)).await);
+        assert_eq!(hub.retries(), 0, "成功打开归 0");
+        assert_eq!(hub.status_json().retries, 0);
+        cmd_tx.send(HubCmd::Close).unwrap();
+        assert!(wait_phase(&hub, Phase::Closed, Duration::from_secs(2)).await);
+    }
+
+    /// ADR-15①: 用户手动 close 归 0 —— 重试等待窗口内 Close 打断, 计数清零回 Closed。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn retries_reset_on_user_close_during_retry() {
+        let (hub, ctx) = test_ctx();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        tokio::spawn(run_supervisor(
+            ctx,
+            cmd_rx,
+            Arc::new(FakeOpener::new(true, 0, false)),
+            Duration::from_secs(5), // 重试等待拉长, Close 一定落在等待窗口内
+        ));
+        cmd_tx.send(HubCmd::Open).unwrap();
+        assert!(wait_phase(&hub, Phase::Retry, Duration::from_secs(2)).await);
+        assert_eq!(hub.retries(), 1, "打开失败 1 次 → 计数 1 (5s 内不会有第 2 次尝试)");
+        cmd_tx.send(HubCmd::Close).unwrap();
+        assert!(wait_phase(&hub, Phase::Closed, Duration::from_millis(500)).await);
+        assert_eq!(hub.retries(), 0, "用户手动 close 归 0");
     }
 }

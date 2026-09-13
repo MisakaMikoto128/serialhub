@@ -36,9 +36,10 @@ BRIDGE_COM = "COM1"  # 桥侧 (硬约束: 测试只许用 COM1/COM2)
 PEER_COM = "COM2"    # pyserial 对端
 HTTP_HOST = "127.0.0.1"
 
-# ADR-11 (修订 ADR-9 ①/ADR-5 ①): /api/status 恰好 11 字段 (flow 回显为双入口对等前提)
+# ADR-11 (修订 ADR-9 ①/ADR-5 ①) + ADR-15① (Sprint 5 契约随动修订 2026-09-13):
+# /api/status 恰 12 字段 (flow 回显为双入口对等前提; retries 为热拔插重连计数)
 STATUS_FIELDS = {"phase", "port", "baud", "config", "flow", "clients", "maxClients",
-                 "rxBytes", "txBytes", "lastError", "uptimeSec"}
+                 "rxBytes", "txBytes", "lastError", "uptimeSec", "retries"}
 
 
 # ------------------------------------------------------------------ 基础工具
@@ -389,10 +390,11 @@ def join_collectors(th: threading.Thread, box: dict, timeout: float = 60.0):
 
 # 任务契约 (spec FR-10g/FR-10c): fleet 列表行必须齐备的字段。
 # 计数器命名沿 ADR-6② (rxBytes/txBytes, 与 /api/status 同名同义); maxClients 为 ADR-14②
-# 新增的强制回显字段。波1 任务速记 "rx/tx" 与实现分歧, 修订记录见 qa-sprint4.md。
+# 新增的强制回显字段; retries 为 ADR-15① (Sprint 5 契约随动修订 2026-09-13) 新增 (13→14 字段)。
+# 波1 任务速记 "rx/tx" 与实现分歧, 修订记录见 qa-sprint4.md。
 FLEET_ROW_FIELDS = {"id", "name", "serial", "listen", "phase", "clients",
                     "rxBytes", "txBytes", "rxRate", "txRate", "lastError",
-                    "uptimeSec", "maxClients"}
+                    "uptimeSec", "maxClients", "retries"}
 
 
 def serial_port_of(row: dict):
@@ -578,7 +580,7 @@ def assert_row_shape(row: dict) -> None:
     missing = FLEET_ROW_FIELDS - set(row)
     assert not missing, f"fleet 行缺字段 {sorted(missing)}: {row!r}"
     for k in ("clients", "rxBytes", "txBytes", "rxRate", "txRate", "uptimeSec",
-              "maxClients"):
+              "maxClients", "retries"):
         assert isinstance(row[k], (int, float)) and not isinstance(row[k], bool) \
             and row[k] >= 0, f"{k} 应为非负数值: {row[k]!r}"
     assert row["phase"] in {"closed", "opening", "open", "retry"}, \
