@@ -134,3 +134,13 @@ service.rs serve 循环化: rebind 槽 (每轮新建) 触发 serve 任务第二�
 ② UI-1 控件尺度令牌 (苹果式): 控件只允许两档高 —— 标准 34px / 紧凑 28px
    (--ctl-h/--ctl-h-sm), 圆角 8px 统一 (--ctl-radius), 控件字号 13px, 水平内边距 12px;
    全站 button/input/select 逐一归入两档, QA 以 Playwright 实测像素断言 (不许"差不多")。
+
+## ADR-17 开源发布 (2026-09-12, 架构师)
+
+① 许可证 = **Apache-2.0**: 商业友好 (允许商用/闭源分发) + 显式专利授予 + NOTICE 机制,
+   比 MIT 多一层专利保护, 是"商业开源"的标准选择; 版权人 = GitHub 账号主体。
+② 公开范围: 全仓库公开 (含 docs/team 多智能体开发记录 —— 它是本项目方法论的一部分);
+   密钥/凭据不存在的先决条件已核对 (无 .env/token 入库)。
+③ 社区文件: CONTRIBUTING (多智能体回路+传统贡献双轨) / CODE_OF_CONDUCT (Contributor
+   Covenant) / SECURITY (如实注明 v1.x 无 TLS, 勿暴露不可信网络) / CI 三平台。
+④ 用户手册 docs/manual/ 与 README 双语 (中文为主, 英文节选), 截图统一 docs/images/。

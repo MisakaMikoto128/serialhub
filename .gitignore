@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 .playwright-cli/
 output.log
+output/

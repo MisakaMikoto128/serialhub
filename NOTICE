@@ -1,0 +1,9 @@
+SerialHub
+Copyright 2026 MisakaMikoto128 (御坂美琴)
+
+This product includes software developed as part of the SerialHub project.
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+
+Third-party dependencies remain under their own licenses (see Cargo.toml / Cargo.lock).
