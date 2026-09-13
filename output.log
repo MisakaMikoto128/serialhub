@@ -1,0 +1,33 @@
+warning: variable does not need to be mutable
+   --> src\service.rs:479:13
+    |
+479 |         let mut ws1 = ws_handshake(addr).await;
+    |             ----^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src\service.rs:689:22
+    |
+689 |         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<HubCmd>();
+    |                      ----^^^^^^
+    |                      |
+    |                      help: remove this `mut`
+
+warning: field `gui` is never read
+  --> src\api.rs:37:9
+   |
+31 | pub struct App {
+   |            --- field in this struct
+...
+37 |     pub gui: bool,
+   |         ^^^
+   |
+   = note: `App` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `serialhub` (bin "serialhub" test) generated 3 warnings (run `cargo fix --bin "serialhub" -p serialhub --tests` to apply 2 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.40s
+     Running unittests src\main.rs (target\debug\deps\serialhub-99541fa7f56e7d8a.exe)

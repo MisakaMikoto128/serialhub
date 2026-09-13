@@ -122,9 +122,9 @@ def test_fr9b_max_clients(start_bridge):
 
 
 def test_fr9a_restart_e2e(make_peer):
-    """FR-9a: GUI 实例自我重启 (COM2, 8081→8085, max-clients=3, --flow xonxoff):
-    旧 ≤3s 退; 新实例 phase=open 且 baud/config/maxClients 保留; WS→串口数据面恢复
-    (flow 保留经 COM1 对端逐字节验证)。"""
+    """ADR-12: 原地换绑 E2E (COM2, 8081→8085, max-clients=3, --flow xonxoff):
+    **不产生新进程**; 同进程换地址后 phase=open 且 baud/config/maxClients/flow 全保留;
+    WS→串口数据面继续可用 (经 COM1 对端逐字节验证)。"""
     peer = make_peer(port_name="COM1", baud=115200, parity="N")    # 对端 COM1 (桥在 COM2)
     log = open(S3_OLD_LOG, "w")
     p_old = subprocess.Popen([EXE, "--port", "COM2", "--addr", "127.0.0.1:8081",
@@ -144,27 +144,20 @@ def test_fr9a_restart_e2e(make_peer):
         assert code == 200 and body == {"ok": True}, \
             f"POST /api/restart 应 200 {{'ok':true}}: {code} {body!r}"
 
-        try:
-            ec_old = p_old.wait(timeout=3)
-            old_exited, old_code = True, ec_old
-        except subprocess.TimeoutExpired:
-            subprocess.run(["taskkill", "/F", "/PID", str(p_old.pid), "/T"], capture_output=True)
-            old_exited, old_code = False, None
-        assert old_exited, "旧进程应 ≤3s 内退出"
-
-        # 新实例在 8085 接管
+        # ADR-12: 原地换绑 —— 进程不退, 同 PID 继续服务新地址
+        time.sleep(1.0)
+        assert p_old.poll() is None, "换址不应终止原进程 (原地换绑)"
         new_st = wait_status(8085, timeout=6)
-        assert new_st, "6s 内新实例未在 8085 就绪"
-        assert new_st["phase"] == "open", f"新实例 phase 应 open: {new_st!r}"
+        assert new_st, "6s 内新地址 8085 未就绪"
+        assert new_st["phase"] == "open", f"换址后 phase 应保持 open: {new_st!r}"
         assert new_st["port"] == "COM2", f"port 应保留 COM2: {new_st['port']!r}"
         assert new_st["baud"] == 115200, f"baud 应保留: {new_st['baud']!r}"
         assert new_st["config"] == "8N2", f"config 应保留: {new_st['config']!r}"
         assert new_st["maxClients"] == 3, f"maxClients 应保留 3: {new_st['maxClients']!r}"
 
-        # 新进程身份: 恰 1 个 serialhub 进程且非旧 PID
+        # 同进程身份: 恰 1 个 serialhub 进程且就是原 PID
         pids = serialhub_pids()
-        assert len(pids) == 1 and pids[0] != p_old.pid, \
-            f"应有恰 1 个新 serialhub 进程: {pids} (旧 {p_old.pid})"
+        assert len(pids) == 1 and pids[0] == p_old.pid,             f"原地换绑不产生新进程: {pids} (原 {p_old.pid})"
 
         # 数据面恢复 + flow 保留 (xonxoff 到串口): WS 发可打印图案 → COM1 对端逐字节收到
         pattern = bytes((0x20 + (i % 0x5f)) for i in range(256))   # 避开 XON(0x11)/XOFF(0x13)
@@ -183,18 +176,30 @@ def test_fr9a_restart_e2e(make_peer):
 
 
 def test_fr9a_restart_headless_guard(start_bridge):
-    """FR-9a: headless 下 POST /api/restart → 400 含 '重启进程', 服务不退出。"""
+    """ADR-12: headless 下 POST /api/restart 同样受理 (原地换绑, 不重启进程) ——
+    200 ok; 换址后原地址失联、新地址 status 可达且串口会话保持。"""
     b = start_bridge()
     b.wait_phase("open")
+    old_port = b.http_port
     st0 = b.status()
     code, body = b.post("/api/restart", {"addr": "127.0.0.1:8087"})
-    assert code == 400, f"headless 下 /api/restart 应 400: {code} {body!r}"
-    assert isinstance(body, dict) and body.get("ok") is False \
-        and "重启进程" in str(body.get("error")), \
-        f"400 错误应含 '重启进程': {body!r}"
-    time.sleep(2.0)
-    st1 = b.status()                                          # 服务不退: status 仍可访问
-    assert st1["phase"] == st0["phase"], f"headless 服务不应退出: {st1!r}"
+    assert code == 200 and body == {"ok": True},         f"ADR-12 headless 换址应 200 {{'ok':true}}: {code} {body!r}"
+    new_st = wait_status(8087, timeout=6)
+    assert new_st, "6s 内新地址 8087 应就绪 (原地换绑, 非 spawn)"
+    assert new_st["phase"] == st0["phase"] and new_st["port"] == st0["port"],         f"串口会话应保持: {st0!r} -> {new_st!r}"
+    time.sleep(1.0)
+    pids = serialhub_pids()
+    assert len(pids) == 1, f"换址不产生新进程: {pids}"
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{old_port}/api/status", timeout=2)
+        raise AssertionError("原地址应已失联 (TCP 面已切换)")
+    except AssertionError:
+        raise
+    except Exception:
+        pass
+    urllib.request.urlopen(urllib.request.Request(
+        "http://127.0.0.1:8087/api/shutdown", data=b""), timeout=3).read()
+
 
 
 def test_fr2_flow_xonxoff_loopback(start_bridge, make_peer):

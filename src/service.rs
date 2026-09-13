@@ -31,8 +31,6 @@ pub struct Startup {
     pub max_clients: u32,
     /// ADR-10: 流控 (CLI 与 /api/config 同一套校验; 自我重启携带)。
     pub flow: Flow,
-    /// FR-9a: 是否 GUI 壳 —— /api/restart 只在 GUI 模式允许自我重启。
-    pub gui: bool,
 }
 
 /// 服务向上层 (GUI) 发的通知。
@@ -72,12 +70,11 @@ pub async fn run_service(
     // watch 接收端必须在 Ready 事件之前创建 —— 否则 Ready 后立刻到达的停机指令
     // (测试/UI 竞态) 会因接收端不存在而 SendError; 且 watch 语义是"晚订阅的 changed()
     // 以订阅时值为基线", 晚订阅会漏看已发生的停机变更。
-    let mut serve_sd = shutdown_tx.subscribe();
     let mut main_sd = shutdown_tx.subscribe();
 
     // 1) 绑定: FR-9a 交接需要 —— bind 失败按 250ms 重试至 <=2s (等旧实例优雅退出),
     //    仍失败按 FR-8 报"端口被占用" (不开串口、不进服务循环)。
-    let listener = {
+    let mut listener = {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         loop {
             match TcpListener::bind(su.addr).await {
@@ -131,39 +128,108 @@ pub async fn run_service(
         });
     }
 
-    // 4) HTTP+WS 服务 (优雅停机由 shutdown watch 触发)
-    // FR-9a: 自我重启目标地址槽 —— /api/restart 只登记并触发停机;
-    // 真正的 spawn 在 finalize_shutdown 里、串口释放之后 (先释放 COM 再交接,
-    // 否则新实例 auto-open 会撞上旧实例未释放的串口, 触发 ELTIMA 失败打开锁)。
-    let restart_to: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
-    let app = crate::api::App {
-        ctx: ctx.clone(),
-        cmd_tx: cmd_tx.clone(),
-        shutdown_tx: shutdown_tx.clone(),
-        gui: su.gui,
-        restart_to: restart_to.clone(),
-        index: include_str!("../ui/index.html"),
-    };
-    let serve = tokio::spawn(async move {
-        let shutdown = async move {
-            tokio::select! {
-                _ = serve_sd.changed() => {},          // 托盘退出 / POST /api/shutdown
-                _ = tokio::signal::ctrl_c() => {},     // headless 控制台 Ctrl-C
+    // 4) HTTP+WS 服务 (优雅停机由 shutdown watch 触发)。
+    //    ADR-12 (推翻 ADR-9② spawn 重启): 改监听地址走**原地换绑** —— drop 旧 listener
+    //    → 重新 bind 新地址 → 重开 serve; hub/串口会话/广播通道/托盘全程不动,
+    //    终端历史 (在页面里) 与状态机零损失。rebind_to 槽由 /api/restart 登记。
+    let rebind_to: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+    let mut cur_addr = addr;
+    // headless 控制台 Ctrl-C → 转成与 /api/shutdown 同一条 watch 停机路 (语义等价,
+    // 且避免把 ctrl_c future 塞进每轮 serve 闭包 —— 它只能消费一次)。
+    {
+        let sd = shutdown_tx.clone();
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                let _ = sd.send(true);
             }
-        };
-        axum::serve(listener, crate::api::router(app))
-            .with_graceful_shutdown(shutdown)
-            .await
-    });
-
-    // 5) 主停机路径: watch 触发 -> COM 释放优先 -> axum 有界宽限 (qa-sprint2-fix:
-    //    外部进程挂着连接可拖死优雅停机, 必须 1.5s 内兜底退出)。
-    //    Ctrl-C 与 watch 等价 (GUI 无控制台焦点时不会触发; headless 二者皆可)。
-    tokio::select! {
-        _ = main_sd.changed() => {}          // 托盘退出 / POST /api/shutdown
-        _ = tokio::signal::ctrl_c() => {},   // headless 控制台 Ctrl-C
+        });
     }
-    finalize_shutdown(cmd_tx, ctx, serve, on_event, SHUTDOWN_GRACE, true, restart_to).await
+    // serve 句柄放循环外: 换址循环 continue 后它被新一轮替换, 真停机时交给 finalize
+    #[allow(unused_assignments)] // None 只在换址前理论上可见, 循环首行即被覆盖
+    let mut serve: Option<tokio::task::JoinHandle<Result<Option<()>, std::io::Error>>> = None;
+    loop {
+        // rebind 槽每轮新建 (上一轮消费后即弃)
+        let round_rebind: Arc<std::sync::Mutex<Option<String>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let app = crate::api::App {
+            ctx: ctx.clone(),
+            cmd_tx: cmd_tx.clone(),
+            shutdown_tx: shutdown_tx.clone(),
+            restart_to: round_rebind.clone(),
+            index: include_str!("../ui/index.html"),
+        };
+        let mut serve_sd = shutdown_tx.subscribe();
+        let rebind_watcher = round_rebind.clone();
+        let handle = tokio::spawn(async move {
+            // 优雅停机只听 watch (Ctrl-C 已在别处汇入同一条 watch)
+            let shutdown = async move {
+                let _ = serve_sd.changed().await;
+            };
+            // 与优雅停机并行的第二出口: rebind 登记即退出当前 serve (只断 TCP 面)
+            let rebinding = async move {
+                loop {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    if rebind_watcher.lock().unwrap().is_some() {
+                        break;
+                    }
+                }
+            };
+            tokio::select! {
+                r = axum::serve(listener, crate::api::router(app))
+                    .with_graceful_shutdown(shutdown) => { r.map(|_| None) }
+                _ = rebinding => { Ok(Some(())) }          // 换址请求: 正常退出 serve
+            }
+        });
+        serve = Some(handle);
+
+        // 5) 主等待: watch 停机 (含 Ctrl-C) / 换址
+        let rebind_req = tokio::select! {
+            _ = main_sd.changed() => None,       // 托盘退出 / POST /api/shutdown / Ctrl-C → 真停机
+            r = serve.as_mut().expect("serve 句柄应在每轮循环开头就位") => match r {
+                Ok(Ok(Some(()))) => Some(()),    // 换址: 退出 serve 循环, 走原地换绑
+                Ok(Ok(None)) => None,            // serve 自行结束 (异常), 按停机处理
+                Ok(Err(e)) => return Err(format!("HTTP 服务错误: {e}")),
+                Err(e) => return Err(format!("HTTP 服务任务异常: {e}")),
+            },
+        };
+        if let Some(()) = rebind_req {
+            let new_addr = rebind_to.lock().unwrap().take().or_else(|| round_rebind.lock().unwrap().take());
+            if let Some(new_addr) = new_addr {
+                // 串口面不动 —— 只换 TCP 面。旧 serve 任务已在 select 中结束。
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+                let bound = loop {
+                    match TcpListener::bind(&new_addr).await {
+                        Ok(l) => break l,
+                        Err(e) => {
+                            if tokio::time::Instant::now() >= deadline {
+                                eprintln!("serialhub: 换址失败 ({new_addr}): {e} —— 保持原地址 {cur_addr} 继续服务");
+                                break TcpListener::bind(cur_addr).await.map_err(|e| {
+                                    format!("换址失败且原地址也绑定失败: {e}")
+                                })?;
+                            }
+                            tokio::time::sleep(Duration::from_millis(250)).await;
+                        }
+                    }
+                };
+                let bound_addr = bound.local_addr().map_err(|e| format!("获取监听地址失败: {e}"))?;
+                println!("serialhub: 监听地址已切换 {cur_addr} -> {bound_addr} (串口会话与状态未中断)");
+                cur_addr = bound_addr;
+                listener = bound;
+                continue; // 回到循环顶部, 用新 listener 重开 serve
+            }
+        }
+        break; // 真停机
+    }
+    // 真停机: 把带换址语义的句柄包回 finalize 期望的形状 (内层 Option 已无意义)
+    let handle = serve.expect("serve 句柄应在循环中至少创建一次");
+    let serve: tokio::task::JoinHandle<Result<(), std::io::Error>> = tokio::spawn(async move {
+        match handle.await {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(e)) => Err(e),
+            Err(e) => Err(std::io::Error::other(e.to_string())),
+        }
+    });
+    finalize_shutdown(cmd_tx, ctx, serve, on_event, SHUTDOWN_GRACE, true, rebind_to).await
 }
 
 /// 停机宽限 (qa-sprint2-fix): watch 触发后 250ms 保证串口线程退出 (COM 释放优先),
@@ -294,7 +360,6 @@ mod tests {
             addr: "127.0.0.1:0".parse().unwrap(), // 随机空闲端口
             max_clients: 0,
             flow: crate::config::Flow::None,
-            gui: false,
         };
         let srv = tokio::spawn(run_service(
             su,
@@ -392,7 +457,6 @@ mod tests {
             addr: "127.0.0.1:0".parse().unwrap(),
             max_clients: 1,
             flow: Flow::None,
-            gui: false,
         };
         let srv = tokio::spawn(run_service(
             su,
@@ -474,7 +538,8 @@ mod tests {
         drop(ws1);
     }
 
-    /// FR-9a: /api/restart 在 headless (gui=false) 下拒绝, 提示改地址需重启进程。
+    /// ADR-12: /api/restart 在 headless 下**同样受理** (原地换绑, 不再拒绝) ——
+    /// 返回 200 且不触发停机; 服务继续在原进程上服务新地址。
     #[tokio::test(flavor = "multi_thread")]
     async fn restart_rejected_in_headless() {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<HubCmd>();
@@ -494,7 +559,6 @@ mod tests {
             addr: "127.0.0.1:0".parse().unwrap(),
             max_clients: 0,
             flow: crate::config::Flow::None,
-            gui: false,
         };
         let mut srv = tokio::spawn(run_service(
             su,
@@ -520,8 +584,8 @@ mod tests {
         let mut resp = Vec::new();
         http.read_to_end(&mut resp).await.unwrap();
         let body = String::from_utf8_lossy(&resp);
-        assert!(body.contains("400"), "应 400: {body}");
-        assert!(body.contains("重启进程"), "应提示重启进程: {body}");
+        assert!(body.contains("200"), "ADR-12: headless 换址应受理 (200): {body}");
+        assert!(body.contains("\"ok\":true"), "响应体应 ok: {body}");
 
         // 守卫在停机之前: 服务不应因 restart 请求退出 (&mut 借用, srv 稍后仍需 join)
         tokio::time::timeout(Duration::from_millis(500), &mut srv)
@@ -639,7 +703,6 @@ mod tests {
             addr: "127.0.0.1:0".parse().unwrap(),
             max_clients: 0,
             flow: crate::config::Flow::None,
-            gui: false,
         };
         let srv = tokio::spawn(run_service(
             su,

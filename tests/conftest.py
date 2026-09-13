@@ -34,8 +34,8 @@ BRIDGE_COM = "COM1"  # 桥侧 (硬约束: 测试只许用 COM1/COM2)
 PEER_COM = "COM2"    # pyserial 对端
 HTTP_HOST = "127.0.0.1"
 
-# ADR-9 ① (修订 ADR-5 ①): /api/status 恰好 10 字段 (新增 maxClients), 不含 flow
-STATUS_FIELDS = {"phase", "port", "baud", "config", "clients", "maxClients",
+# ADR-11 (修订 ADR-9 ①/ADR-5 ①): /api/status 恰好 11 字段 (flow 回显为双入口对等前提)
+STATUS_FIELDS = {"phase", "port", "baud", "config", "flow", "clients", "maxClients",
                  "rxBytes", "txBytes", "lastError", "uptimeSec"}
 
 

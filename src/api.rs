@@ -34,7 +34,6 @@ pub struct App {
     /// 停机开关 (ADR-8): /api/shutdown 与托盘「退出」共用同一 watch。
     pub shutdown_tx: tokio::sync::watch::Sender<bool>,
     /// FR-9a: 是否 GUI 壳 (决定 /api/restart 是否可用)。
-    pub gui: bool,
     /// FR-9a: 自我重启目标地址槽 (/api/restart 登记, finalize_shutdown 消费)。
     pub restart_to: Arc<std::sync::Mutex<Option<String>>>,
     pub index: &'static str,
@@ -161,18 +160,14 @@ async fn close(State(app): State<App>) -> Response {
     ok()
 }
 
-/// FR-9a/ADR-9②: GUI 模式改 addr —— 校验并登记新地址后触发与托盘退出相同的
-/// 优雅停机; 真正的 spawn 在 finalize_shutdown 里、串口释放之后执行 (顺序原因见
-/// service.rs)。headless 模式拒绝: 无壳不自起, 提示"改地址请重启进程"。
+/// FR-9a/ADR-12: 改监听地址 = **原地换绑** (headless 与 GUI 一视同仁, 均不重启进程) ——
+/// 校验并登记新地址, serve 循环退出当前 TCP 面后重 bind; 串口会话/状态/托盘全程不动。
 #[derive(Deserialize)]
 struct RestartReq {
     addr: String,
 }
 
 async fn restart(State(app): State<App>, body: Result<Json<RestartReq>, JsonRejection>) -> Response {
-    if !app.gui {
-        return bad("headless 模式改地址请重启进程".into());
-    }
     let Json(req) = match body {
         Ok(b) => b,
         Err(rej) => return bad(format!("请求体不是合法 JSON: {rej}")),
@@ -187,7 +182,6 @@ async fn restart(State(app): State<App>, body: Result<Json<RestartReq>, JsonReje
         }
     };
     *crate::hub::lock_mutex(&app.restart_to) = Some(new_addr.to_string());
-    let _ = app.shutdown_tx.send(true);
     ok()
 }
 

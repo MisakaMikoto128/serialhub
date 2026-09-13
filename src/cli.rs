@@ -71,7 +71,6 @@ impl Cli {
             addr: self.addr,
             max_clients: self.max_clients,
             flow: self.flow,
-            gui: self.gui,
         }
     }
 }

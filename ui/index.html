@@ -167,7 +167,7 @@ footer{max-width:1440px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
           <label for="inAddr">地址</label>
           <div class="ctl">
             <input id="inAddr" type="text" placeholder="127.0.0.1:8080" title="HTTP/WS 监听地址 (FR-9a)" />
-            <button id="btnRestart" type="button" title="以新地址重启桥 (仅桌面壳窗口可用, FR-9a)">应用并重启</button>
+            <button id="btnRestart" type="button" title="桥切换到新监听地址; 串口会话与终端历史保留, 现有连接需重连新地址 (ADR-12)">应用地址</button>
           </div>
         </div>
         <div class="send-hint" id="restartHint"></div>
@@ -393,14 +393,9 @@ function applyStatus(s) {
     }
   }
 
-  // FR-9a: 地址重启仅桌面壳窗口可用 (wry 注入 __SERIALHUB_SHELL 标记);
-  // headless (浏览器打开) 置灰并提示。
-  const shell = !!window.__SERIALHUB_SHELL;
-  $("inAddr").disabled = !shell;
-  $("btnRestart").disabled = !shell;
-  $("restartHint").textContent = shell
-    ? "重启后终端历史将清空"
-    : "仅桌面壳窗口支持改地址重启; headless 模式请重启进程";
+  // FR-9a/ADR-12: 改地址 = 原地换绑 (不重启进程), 任何页面都可用 —— 不再按壳门控。
+  // 现有 WS 连接会随 TCP 面切换断开, 页面自动重连新地址; 终端历史与串口会话保留。
+  $("restartHint").textContent = "桥将切换到新地址; 串口会话与终端历史保留, 现有连接需重连";
 
   // FIX-20: 「退出程序」只对桌面壳有意义 (浏览器/HEADLESS 页点了也没用) —— 置灰。
   $("btnQuit").disabled = !shell || quitBusy;
@@ -769,15 +764,15 @@ $("btnRestart").addEventListener("click", async () => {
   $("inAddr").classList.remove("invalid");
   if (b.dataset.armed !== "1") {
     b.dataset.armed = "1";
-    b.textContent = "确认重启?";
+    b.textContent = "确认切换?";
     b.classList.add("armed");
-    $("restartHint").textContent = "确认后将重启并清空终端历史 (FIX-21)"; // FIX-21
+    $("restartHint").textContent = "确认后桥切换到新地址; 串口不断, 现有连接将断开需重连";
     setTimeout(() => {
       if (b.dataset.armed === "1") {
         b.dataset.armed = "0";
-        b.textContent = "应用并重启";
+        b.textContent = "应用地址";
         b.classList.remove("armed");
-        $("restartHint").textContent = "重启后终端历史将清空";
+        $("restartHint").textContent = "桥将切换到新地址; 串口会话与终端历史保留, 现有连接需重连";
       }
     }, 3000);
     return;
