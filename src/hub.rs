@@ -59,6 +59,10 @@ struct Inner {
     /// ADR-15①: 当次会话内重试计数 —— 每次打开失败 (retry 迁移) +1,
     /// 成功打开归 0; 用户手动 close 归 0。只有监督任务写。
     retries: u32,
+    /// FR-12/ADR-16①: 每桥自动重连开关 (默认 true)。false 时串口掉线/打开失败
+    /// 直接 phase=closed, 不进重试循环; 手动 open 仍可单次尝试。写方: HTTP 层
+    /// (建桥/改配), 读方: 监督任务 (掉线后的分支决策)。
+    auto_reconnect: bool,
 }
 
 pub struct HubState {
@@ -79,6 +83,7 @@ impl HubState {
                 tx_bytes: 0,
                 last_error: None,
                 retries: 0,
+                auto_reconnect: true, // FR-12: 默认开启自动重连
             }),
         }
     }
@@ -171,9 +176,22 @@ impl HubState {
         w(&self.inner).retries = 0;
     }
 
+    // ---- 自动重连开关 (FR-12/ADR-16①) ----
+
+    pub fn auto_reconnect(&self) -> bool {
+        r(&self.inner).auto_reconnect
+    }
+
+    /// 建桥/改配时写; 监督任务在每次掉线/打开失败分支与重试等待中读取,
+    /// 因此运行中翻转"即时生效" (下个决策点就改道)。
+    pub fn set_auto_reconnect(&self, on: bool) {
+        w(&self.inner).auto_reconnect = on;
+    }
+
     // ---- /api/status 投影 ----
 
-    /// 字段名与字段集合是 QA 契约: 恰好 12 个字段, 一个不多一个不少 (ADR-15① 修订)。
+    /// 字段名与字段集合是 QA 契约: 恰好 13 个字段, 一个不多一个不少
+    /// (ADR-15① 修订 + ADR-16① autoReconnect 12→13)。
     pub fn status_json(&self) -> StatusJson {
         let g = r(&self.inner);
         StatusJson {
@@ -188,6 +206,7 @@ impl HubState {
             tx_bytes: g.tx_bytes,
             last_error: g.last_error.clone(),
             retries: g.retries,
+            auto_reconnect: g.auto_reconnect,
             uptime_sec: self.started.elapsed().as_secs(),
         }
     }
@@ -213,6 +232,9 @@ pub struct StatusJson {
     pub last_error: Option<String>,
     /// ADR-15①: 当次会话内重试计数 (打开失败 +1, 成功打开/手动 close 归 0)。
     pub retries: u32,
+    /// FR-12/ADR-16①: 每桥自动重连开关 (默认 true; 12→13 字段)。
+    #[serde(rename = "autoReconnect")]
+    pub auto_reconnect: bool,
     #[serde(rename = "uptimeSec")]
     pub uptime_sec: u64,
 }
@@ -234,7 +256,7 @@ mod tests {
         let hub = hub_with_com1();
         let v = serde_json::to_value(hub.status_json()).unwrap();
         let obj = v.as_object().unwrap();
-        // 契约 (ADR-15① 修订 ADR-11): 恰好这 12 个字段 (QA 按字段名断言)
+        // 契约 (ADR-15① 修订 ADR-11 + ADR-16①): 恰好这 13 个字段 (QA 按字段名断言)
         let want: HashSet<&str> = [
             "phase",
             "port",
@@ -247,6 +269,7 @@ mod tests {
             "txBytes",
             "lastError",
             "retries",
+            "autoReconnect", // ADR-16① 新增 (12→13)
             "uptimeSec",
         ]
         .into_iter()
@@ -264,7 +287,22 @@ mod tests {
         assert_eq!(v["txBytes"], 0);
         assert!(v["lastError"].is_null());
         assert_eq!(v["retries"], 0);
+        assert_eq!(v["autoReconnect"], true, "FR-12: autoReconnect 默认 true");
         assert_eq!(v["uptimeSec"], 0);
+    }
+
+    /// FR-12/ADR-16①: autoReconnect 可翻转且 /api/status 如实回显
+    /// (回显什么 UI 就能存回什么, 不静默清零 —— FIX-17 同类风险)。
+    #[test]
+    fn auto_reconnect_echo_and_roundtrip() {
+        let hub = hub_with_com1();
+        assert!(hub.auto_reconnect(), "默认 true");
+        assert_eq!(hub.status_json().auto_reconnect, true);
+        hub.set_auto_reconnect(false);
+        assert!(!hub.auto_reconnect());
+        assert_eq!(hub.status_json().auto_reconnect, false);
+        hub.set_auto_reconnect(true);
+        assert_eq!(hub.status_json().auto_reconnect, true);
     }
 
     #[test]

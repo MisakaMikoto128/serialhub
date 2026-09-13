@@ -122,3 +122,15 @@ service.rs serve 循环化: rebind 槽 (每轮新建) 触发 serve 任务第二�
 ③ 演练背书: COM99 缺席→retries 递增 (黑盒); 恢复路径单测注入假打开器 (已有);
    QA 调查 ELTIMA 是否有 CLI 可程序化"拔插"虚拟对 —— 有则补金测试, 无则出人工演练指南。
 ④ 客户端零动作: 串口断/恢复期间 WS 客户端连接保持, 恢复后数据自动续传 —— 必须有测试断言。
+
+## ADR-16 自动重连可选项 + 控件尺度统一 (2026-09-12, 架构师; Sprint 6 / v1.2.0)
+
+用户两点: ①自动重连应可自由选择 (有时不需要); ②按钮/输入框高度参差, 缺高级感 —— 按苹果
+设计哲学统一。
+
+① FR-12 每桥 `autoReconnect` (默认 true): CLI --reconnect/--no-reconnect + 建桥/改配 body
+   + fleet 桥对象与单桥 status 回显。false 时串口断开 → 直接 phase=closed (lastError 注明
+   "自动重连已关闭"), 不进重试循环; 手动打开仍可用。契约字段数 12→13 / 14→15。
+② UI-1 控件尺度令牌 (苹果式): 控件只允许两档高 —— 标准 34px / 紧凑 28px
+   (--ctl-h/--ctl-h-sm), 圆角 8px 统一 (--ctl-radius), 控件字号 13px, 水平内边距 12px;
+   全站 button/input/select 逐一归入两档, QA 以 Playwright 实测像素断言 (不许"差不多")。

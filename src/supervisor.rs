@@ -10,6 +10,10 @@
 //! 重试间隔默认 1s; 测试通过 retry_delay 参数注入更短的值。
 //! ADR-15①: 每次尝试失败进入 Retry 迁移时 hub.retries +1; 成功打开或用户
 //! 手动 Close 归 0 —— UI 据此显示「正在自动重连 (第 n 次)」。
+//! FR-12/ADR-16①: 每桥 autoReconnect (默认 true)。false 时掉线 → 直接
+//! phase=closed (lastError="串口已断开 (自动重连已关闭)"), 打开失败 → 直接
+//! closed (lastError=真实原因), 都不进重试循环; 手动 Open 仍可单次尝试。
+//! 运行中翻转 (改配) 即时生效: 重试等待里轮询该开关, 翻 false 立即转 Closed。
 //! opener 做成 trait 是为了单测可以注入假串口 (真实串口状态机无法确定性复现)。
 
 use std::sync::atomic::Ordering;
@@ -66,19 +70,30 @@ pub async fn run_supervisor(
                     if user_closed {
                         break; // → Closed (retries 已在成功打开时归 0), 回到等待指令
                     }
+                    // FR-12: 自动重连已关闭 → 掉线即停, 直接 Closed 不进重试循环
+                    if !hub.auto_reconnect() {
+                        hub.set_last_error("串口已断开 (自动重连已关闭)".to_string());
+                        break;
+                    }
                     // 异常断开 → Retry, 1s 后重开 (FR-3); 本次尝试失败计入重试次数 (ADR-15①)
                     hub.retry_inc();
                     hub.set_phase(Phase::Retry);
-                    if !wait_retry(&mut cmd_rx, retry_delay).await {
+                    if !wait_retry(&hub, &mut cmd_rx, retry_delay).await {
                         hub.clear_retries(); // Close 打断重试等待 = 用户手动关闭, 归 0
                         break;
                     }
                 }
                 Err(e) => {
+                    // FR-12: 自动重连已关闭 → 打开失败即停, 直接 Closed (不进重试循环)。
+                    // 修复轮 D1: 真实原因留痕 + 固定后缀注明 (ADR-16① lastError 注明义务)。
+                    if !hub.auto_reconnect() {
+                        hub.set_last_error(format!("{e} (自动重连已关闭)"));
+                        break;
+                    }
                     hub.set_last_error(e);
                     hub.retry_inc(); // ADR-15①: 打开失败 → Retry 迁移, 计数 +1
                     hub.set_phase(Phase::Retry);
-                    if !wait_retry(&mut cmd_rx, retry_delay).await {
+                    if !wait_retry(&hub, &mut cmd_rx, retry_delay).await {
                         hub.clear_retries(); // Close 打断重试等待 = 用户手动关闭, 归 0
                         break;
                     }
@@ -90,10 +105,27 @@ pub async fn run_supervisor(
 
 /// 重试等待: 到点返回 true (继续重试); 收到 Close/通道关闭返回 false (回 Closed)。
 /// 重试期间到达的 Open 指令视为"催一下", 立即结束等待去重开。
-async fn wait_retry(cmd_rx: &mut UnboundedReceiver<HubCmd>, d: Duration) -> bool {
-    tokio::select! {
-        _ = tokio::time::sleep(d) => true,
-        cmd = cmd_rx.recv() => matches!(cmd, Some(HubCmd::Open)),
+/// FR-12: 每 25ms 轮询 autoReconnect —— 运行中改配为 false 时立即返回 false
+/// (Retry → Closed, 语义即时生效, 不必等满本次等待间隔)。
+async fn wait_retry(
+    hub: &crate::hub::HubState,
+    cmd_rx: &mut UnboundedReceiver<HubCmd>,
+    d: Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + d;
+    loop {
+        if !hub.auto_reconnect() {
+            return false;
+        }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return true;
+        }
+        let poll = (deadline - now).min(Duration::from_millis(25));
+        tokio::select! {
+            cmd = cmd_rx.recv() => return matches!(cmd, Some(HubCmd::Open)),
+            _ = tokio::time::sleep(poll) => {} // 到点后回循环顶复查开关/期限
+        }
     }
 }
 
@@ -398,5 +430,139 @@ mod tests {
         cmd_tx.send(HubCmd::Close).unwrap();
         assert!(wait_phase(&hub, Phase::Closed, Duration::from_millis(500)).await);
         assert_eq!(hub.retries(), 0, "用户手动 close 归 0");
+    }
+
+    /// FR-12: autoReconnect=false 时打开失败 → 直接 Closed, 不进 Retry,
+    /// 不再自动尝试; 手动 open 仍可单次尝试 (失败即停, 不循环)。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reconnect_false_open_fail_goes_closed_no_retry() {
+        let (hub, ctx) = test_ctx();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let opener = Arc::new(FakeOpener::new(true, 0, false));
+        tokio::spawn(run_supervisor(
+            ctx,
+            cmd_rx,
+            opener.clone(),
+            Duration::from_millis(20),
+        ));
+        hub.set_auto_reconnect(false);
+        cmd_tx.send(HubCmd::Open).unwrap();
+        // 等第一次尝试发生 (初始相位本就是 Closed, 不能拿它当"失败即停"的证据)
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while opener.calls.load(Ordering::Relaxed) < 1 {
+            assert!(tokio::time::Instant::now() < deadline, "打开未被尝试");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        // 直接 Closed (真实失败原因留痕 + 注明后缀, 修复轮 D1), 绝不出现 Retry 相位
+        assert!(wait_phase(&hub, Phase::Closed, Duration::from_secs(2)).await);
+        assert_eq!(opener.calls.load(Ordering::Relaxed), 1, "失败即停, 只试一次");
+        assert_eq!(hub.phase(), Phase::Closed);
+        let le = hub.status_json().last_error.unwrap_or_default();
+        assert!(le.contains("模拟"), "真实原因须留痕: {le}");
+        assert!(le.ends_with("(自动重连已关闭)"), "打开失败也须注明关闭 (D1): {le}");
+        // 稳定窗口: 不应自行重试
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert_eq!(opener.calls.load(Ordering::Relaxed), 1, "不得自动重试");
+        // 手动 open = 单次尝试: 再失败仍然 Closed, 不循环
+        cmd_tx.send(HubCmd::Open).unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while opener.calls.load(Ordering::Relaxed) < 2 {
+            assert!(tokio::time::Instant::now() < deadline, "手动 open 未被尝试");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(wait_phase(&hub, Phase::Closed, Duration::from_secs(2)).await);
+        assert_eq!(opener.calls.load(Ordering::Relaxed), 2, "手动 open 单次尝试");
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert_eq!(opener.calls.load(Ordering::Relaxed), 2, "失败后仍不循环");
+    }
+
+    /// FR-12: autoReconnect=false 时会话掉线 → 直接 Closed 且 lastError
+    /// 注明「自动重连已关闭」, 不进重试循环 (真机/假打开器同语义)。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reconnect_false_drop_goes_closed_with_fixed_message() {
+        let (hub, ctx) = test_ctx();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let opener = Arc::new(FakeOpener::new(false, 0, true)); // 打开成功后立刻掉线
+        tokio::spawn(run_supervisor(
+            ctx,
+            cmd_rx,
+            opener.clone(),
+            Duration::from_millis(20),
+        ));
+        hub.set_auto_reconnect(false);
+        cmd_tx.send(HubCmd::Open).unwrap();
+        assert!(wait_phase(&hub, Phase::Open, Duration::from_secs(2)).await);
+        // 掉线 → 直接 Closed (固定话术), 不出现 Retry
+        assert!(wait_phase(&hub, Phase::Closed, Duration::from_secs(2)).await);
+        assert!(hub
+            .status_json()
+            .last_error
+            .unwrap_or_default()
+            .contains("自动重连已关闭"));
+        assert_eq!(opener.calls.load(Ordering::Relaxed), 1);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert_eq!(opener.calls.load(Ordering::Relaxed), 1, "掉线后不得自动重试");
+        // 手动 open = 单次尝试, 成功照常 Open
+        cmd_tx.send(HubCmd::Open).unwrap();
+        assert!(wait_phase(&hub, Phase::Open, Duration::from_secs(2)).await);
+        cmd_tx.send(HubCmd::Close).unwrap();
+        assert!(wait_phase(&hub, Phase::Closed, Duration::from_secs(2)).await);
+    }
+
+    /// FR-12: 运行中把 autoReconnect 改为 false 且当前已 Retry → 立即转 Closed
+    /// (语义即时生效, 不等满重试间隔; 此处间隔故意拉长到 5s)。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn flip_false_during_retry_stops_immediately() {
+        let (hub, ctx) = test_ctx();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let opener = Arc::new(FakeOpener::new(true, 0, false));
+        tokio::spawn(run_supervisor(
+            ctx,
+            cmd_rx,
+            opener.clone(),
+            Duration::from_secs(5),
+        ));
+        cmd_tx.send(HubCmd::Open).unwrap();
+        assert!(wait_phase(&hub, Phase::Retry, Duration::from_secs(2)).await);
+        assert_eq!(opener.calls.load(Ordering::Relaxed), 1);
+        // 改配翻转 → 即时生效
+        hub.set_auto_reconnect(false);
+        assert!(
+            wait_phase(&hub, Phase::Closed, Duration::from_millis(500)).await,
+            "翻转后 500ms 内应转 Closed (不等 5s 重试间隔)"
+        );
+        let calls = opener.calls.load(Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(opener.calls.load(Ordering::Relaxed), calls, "翻转后不得再尝试");
+    }
+
+    /// FR-12: autoReconnect=true 维持现状 —— 掉线仍进重试循环 (防回归锚点)。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reconnect_true_keeps_retrying_after_drop() {
+        let (hub, ctx) = test_ctx();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let opener = Arc::new(FakeOpener::new(false, 0, true));
+        tokio::spawn(run_supervisor(
+            ctx,
+            cmd_rx,
+            opener.clone(),
+            Duration::from_millis(20),
+        ));
+        assert!(hub.auto_reconnect(), "默认 true (FR-12)");
+        cmd_tx.send(HubCmd::Open).unwrap();
+        assert!(wait_phase(&hub, Phase::Open, Duration::from_secs(2)).await);
+        assert!(wait_phase(&hub, Phase::Retry, Duration::from_secs(2)).await);
+        // 第 2 次尝试发生 = 掉线后确实自动重试 (Retry 相位出现即断言会竞早)
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while opener.calls.load(Ordering::Relaxed) < 2 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "掉线后未自动重试 (calls={})",
+                opener.calls.load(Ordering::Relaxed)
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        cmd_tx.send(HubCmd::Close).unwrap();
+        assert!(wait_phase(&hub, Phase::Closed, Duration::from_secs(2)).await);
     }
 }

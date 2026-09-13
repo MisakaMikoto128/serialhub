@@ -28,6 +28,8 @@ SerialHub — 串口 <-> WebSocket 桥接管理器 (内嵌 Web 控制台)
   --no-open          给了 --port 也不自动打开 (仍作为控制台的默认参数)
   --max-clients <n>  最大 WS 客户端数/每桥, 0 = 不限 (默认 0; 超限新连接以 close 1013 拒绝, FR-9b)
   --flow <模式>      流控: none / rtscts / xonxoff (默认 none; 与 /api/config 同一套校验, ADR-10)
+  --reconnect        串口断开后自动重连 (FR-12/ADR-16①, 默认开启)
+  --no-reconnect     关闭自动重连: 掉线即停 (已停止), 手动打开仍可用
   --fleet <路径>     桥清单文件路径 (默认 %APPDATA%\\SerialHub\\fleet.json; FR-10b)
   --no-fleet         关闭桥清单持久化 (FR-10b)
   --headless         纯 CLI 前台模式: 无窗口无托盘 (自动化测试与脚本场景, FR-8)
@@ -62,6 +64,8 @@ pub struct Cli {
     pub fleet: Option<PathBuf>,
     /// FR-10b: --no-fleet 关闭持久化。
     pub no_fleet: bool,
+    /// FR-12/ADR-16①: 串口断开后自动重连 (默认 true; --no-reconnect 关闭)。
+    pub auto_reconnect: bool,
 }
 
 impl Cli {
@@ -106,6 +110,7 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
     let mut flow = Flow::None;
     let mut fleet: Option<PathBuf> = None;
     let mut no_fleet = false;
+    let mut auto_reconnect = true; // FR-12: 默认开启自动重连
 
     let mut i = 0usize;
     while i < args.len() {
@@ -163,6 +168,8 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
                 fleet = Some(PathBuf::from(t));
             }
             "--no-fleet" => no_fleet = true,
+            "--reconnect" => auto_reconnect = true,
+            "--no-reconnect" => auto_reconnect = false,
             "--headless" => headless = true,
             "--gui" => gui_flag = true,
             other => return Err(format!("未知参数 \"{other}\"")),
@@ -191,6 +198,7 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
         flow,
         fleet,
         no_fleet,
+        auto_reconnect,
     })
 }
 
@@ -216,6 +224,8 @@ mod tests {
         assert!(!c.no_open);
         // FR-8: 默认 GUI
         assert!(c.gui);
+        // FR-12: 默认开启自动重连
+        assert!(c.auto_reconnect);
         // 未给 --port → 不自动打开 (FR-5)
         assert!(!c.auto_open());
     }
@@ -305,5 +315,23 @@ mod tests {
         // --no-fleet 与 --fleet 可并存, --no-fleet 优先 (语义在 from_cli 里收敛)
         let c = parse_str("--fleet a.json --no-fleet").unwrap();
         assert!(c.no_fleet);
+    }
+
+    #[test]
+    fn reconnect_flags() {
+        // FR-12/ADR-16①: 默认 true; --no-reconnect 关; --reconnect 显式开
+        assert!(parse(&[]).unwrap().auto_reconnect);
+        let c = parse_str("--no-reconnect").unwrap();
+        assert!(!c.auto_reconnect);
+        let c = parse_str("--reconnect").unwrap();
+        assert!(c.auto_reconnect);
+        // 与其他参数组合不受影响
+        let c = parse_str("--port COM1 --no-reconnect --baud 9600").unwrap();
+        assert!(!c.auto_reconnect && c.baud == 9600);
+        // 重复给出时后者生效 (与 --flow 同口径, 无互斥裁定)
+        let c = parse_str("--no-reconnect --reconnect").unwrap();
+        assert!(c.auto_reconnect);
+        let c = parse_str("--reconnect --no-reconnect").unwrap();
+        assert!(!c.auto_reconnect);
     }
 }

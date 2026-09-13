@@ -113,6 +113,9 @@ pub(crate) struct ConfigReq {
     /// 静默忽略, 兼容端点 POST /api/config 即失效, FR-9b/ADR-9b① 违约。)
     #[serde(rename = "maxClients")]
     pub(crate) max_clients: Option<u32>,
+    /// FR-12/ADR-16①: 每桥自动重连开关 (缺省 = 不改动, 保持现值)。
+    #[serde(rename = "autoReconnect")]
+    pub(crate) auto_reconnect: Option<bool>,
 }
 
 /// 全字段可省: 只更新给出的字段 (方便部分修改); 校验失败整体拒绝, 不做半套更新。
@@ -153,6 +156,10 @@ pub(crate) fn apply_config_core(ctx: &PortCtx, req: ConfigReq) -> Response {
     }
     if let Some(m) = req.max_clients {
         ctx.hub.set_max_clients(m); // 0 = 不限, 无上限校验 (u32)
+    }
+    // FR-12/ADR-16①: autoReconnect 即改即生效 (监督任务在下个决策点读新值)
+    if let Some(a) = req.auto_reconnect {
+        ctx.hub.set_auto_reconnect(a);
     }
     ctx.hub.update_config(cfg);
     ok()

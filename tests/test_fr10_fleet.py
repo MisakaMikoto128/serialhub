@@ -3,7 +3,7 @@
 
 覆盖 (预期只来自 spec FR-10g + 任务契约, 不读 src/ 调预期):
 1  FR-10a/b 多桥并存: 2 座桥 (COM1/COM2 虚拟对各占一端) 同时 open, 跨对回环逐字节, 计数对账互不串扰;
-2  FR-10b/g fleet CRUD: 建桥/列表 14 字段 (ADR-15① 随动)/详情/start→open/stop→closed/delete→移除且端口释放;
+2  FR-10b/g fleet CRUD: 建桥/列表 15 字段 (ADR-16① 随动)/详情/start→open/stop→closed/delete→移除且端口释放;
 3  FR-10b 端口冲突: 同 listen 建第二桥被拒 (400 含"占用"或 ok:false), 原桥不受损;
 5  FR-10f 端点稳定: 桥 listen 全生命周期不变; 串口对端断开重接数据面自愈; 缺席串口 retry 可见 (FR-3);
 6  FR-10g tap: /api/fleet/<id>/tap 旁看串口 RX, 与数据面 ws 并存互不干扰。
@@ -130,7 +130,7 @@ def test_fr10g_fleet_crud_and_list_contract(start_fleet, fleet_ready):
     assert len(rows) == 1, f"应恰一座桥: {rows!r}"
     row = rows[0]
     assert row["id"] == id_b, f"列表 id 与建桥响应不一致: {row!r}"
-    assert_row_shape(row)                                  # 14 字段齐全 (ADR-15① 随动)
+    assert_row_shape(row)                                  # 15 字段齐全 (ADR-16① 随动)
     assert row["name"] == "qa-crud", f"name 未回显: {row!r}"
     assert serial_port_of(row) == "COM1", f"serial 未回显: {row!r}"
     assert listen_port_of(row["listen"]) == port, f"listen 未回显: {row!r}"

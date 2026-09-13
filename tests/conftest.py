@@ -36,10 +36,22 @@ BRIDGE_COM = "COM1"  # 桥侧 (硬约束: 测试只许用 COM1/COM2)
 PEER_COM = "COM2"    # pyserial 对端
 HTTP_HOST = "127.0.0.1"
 
-# ADR-11 (修订 ADR-9 ①/ADR-5 ①) + ADR-15① (Sprint 5 契约随动修订 2026-09-13):
-# /api/status 恰 12 字段 (flow 回显为双入口对等前提; retries 为热拔插重连计数)
+# ADR-11 (修订 ADR-9 ①/ADR-5 ①) + ADR-15① (Sprint 5 契约随动修订 2026-09-13, 11→12 增 retries)
+# + ADR-16① (Sprint 6 契约随动修订 2026-09-13, 12→13 增 autoReconnect):
+# /api/status 恰 13 字段 (flow 回显为双入口对等前提; retries 为热拔插重连计数;
+# autoReconnect 为每桥自动重连开关回显, 默认 true)
 STATUS_FIELDS = {"phase", "port", "baud", "config", "flow", "clients", "maxClients",
-                 "rxBytes", "txBytes", "lastError", "uptimeSec", "retries"}
+                 "rxBytes", "txBytes", "lastError", "uptimeSec", "retries",
+                 "autoReconnect"}
+
+
+def status_fields_expected(sample: dict) -> set:
+    """ADR-16① 渐进放行判据: autoReconnect 未落地时按旧 12 字段契约守护,
+    落地即 13 字段全量。仅容忍该一字段缺席 —— 其它任何多/少字段仍当场违约。"""
+    exp = set(STATUS_FIELDS)
+    if "autoReconnect" not in sample:
+        exp.discard("autoReconnect")   # [BLOCKED-BY-BACKEND] 待 dev-backend 落地放行
+    return exp
 
 
 # ------------------------------------------------------------------ 基础工具
@@ -73,6 +85,22 @@ def http_get(url: str, timeout: float = 5.0):
 def http_post(url: str, body, timeout: float = 5.0):
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", "replace")
+        try:
+            return e.code, json.loads(raw)
+        except json.JSONDecodeError:
+            return e.code, raw
+
+
+def http_patch(url: str, body, timeout: float = 5.0):
+    """PATCH JSON (ADR-14③: /api/fleet/<id>/config 受理 PATCH; FR-12 运行中改配用)。"""
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="PATCH",
                                  headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -390,11 +418,12 @@ def join_collectors(th: threading.Thread, box: dict, timeout: float = 60.0):
 
 # 任务契约 (spec FR-10g/FR-10c): fleet 列表行必须齐备的字段。
 # 计数器命名沿 ADR-6② (rxBytes/txBytes, 与 /api/status 同名同义); maxClients 为 ADR-14②
-# 新增的强制回显字段; retries 为 ADR-15① (Sprint 5 契约随动修订 2026-09-13) 新增 (13→14 字段)。
+# 新增的强制回显字段; retries 为 ADR-15① (Sprint 5 契约随动修订 2026-09-13, 13→14 字段);
+# autoReconnect 为 ADR-16① (Sprint 6 契约随动修订 2026-09-13, 14→15 字段, 默认 true)。
 # 波1 任务速记 "rx/tx" 与实现分歧, 修订记录见 qa-sprint4.md。
 FLEET_ROW_FIELDS = {"id", "name", "serial", "listen", "phase", "clients",
                     "rxBytes", "txBytes", "rxRate", "txRate", "lastError",
-                    "uptimeSec", "maxClients", "retries"}
+                    "uptimeSec", "maxClients", "retries", "autoReconnect"}
 
 
 def serial_port_of(row: dict):
@@ -513,17 +542,21 @@ def row_of(api: Bridge, ident) -> dict | None:
 
 
 def fleet_create(api: Bridge, name: str, serial_port: str, listen_port: int,
-                 baud: int = 115200, config: str = "8N1", flow: str = "none"):
+                 baud: int = 115200, config: str = "8N1", flow: str = "none",
+                 extra: dict | None = None):
     """POST /api/fleet 新建桥。
 
     契约形状 (黑盒实证 + ADR-14③ "受理 create 形状 body"): serial 为嵌套 SerialReq
     对象 {port, baud, dataBits, parity, stopBits, flow}, 与桥对象回显一致。
+    extra: 追加到建桥 body 顶层 (如 {"autoReconnect": False}, ADR-16①)。
     """
     body = {"name": name,
             "serial": {"port": serial_port, "baud": baud,
                        "dataBits": int(config[0]), "parity": config[1],
                        "stopBits": int(config[2]), "flow": flow},
             "listen": f"{HTTP_HOST}:{listen_port}"}
+    if extra:
+        body.update(extra)
     code, resp = api.post("/api/fleet", body)
     return code, resp
 
@@ -575,14 +608,22 @@ def fleet_new_id(api: Bridge, create_resp, listen_port: int):
 
 
 def assert_row_shape(row: dict) -> None:
-    """FR-10g/FR-10c + ADR-14②: 行字段齐全 + 类型合理 + phase ∈ FR-3 状态机四态。"""
+    """FR-10g/FR-10c + ADR-14② + ADR-16①: 行字段齐全 + 类型合理 + phase ∈ FR-3 状态机四态。"""
     assert isinstance(row, dict), f"fleet 行非对象: {row!r}"
     missing = FLEET_ROW_FIELDS - set(row)
+    if "autoReconnect" not in row:
+        # ADR-16① 渐进放行: 后端未落地时按旧 14 字段契约守护 (落地即 15 字段全量;
+        # FR-12 语义验收由 test_fr12_reconnect_opt.py 的 fr12_ready 探针门控承载)。
+        # 仅容忍 autoReconnect 一字缺席, 其它多/少字段仍当场违约。
+        missing -= {"autoReconnect"}
     assert not missing, f"fleet 行缺字段 {sorted(missing)}: {row!r}"
     for k in ("clients", "rxBytes", "txBytes", "rxRate", "txRate", "uptimeSec",
               "maxClients", "retries"):
         assert isinstance(row[k], (int, float)) and not isinstance(row[k], bool) \
             and row[k] >= 0, f"{k} 应为非负数值: {row[k]!r}"
+    if "autoReconnect" in row:
+        assert isinstance(row["autoReconnect"], bool), \
+            f"autoReconnect 应为布尔 (ADR-16①): {row['autoReconnect']!r}"
     assert row["phase"] in {"closed", "opening", "open", "retry"}, \
         f"phase 越出 FR-3 状态机: {row['phase']!r}"
     assert row["lastError"] is None or isinstance(row["lastError"], str), \

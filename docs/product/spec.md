@@ -77,8 +77,15 @@ websocket-serial-server —— 2021 年停更, JSON+base64 包帧。
     WS /api/fleet/<id>/tap 旁看串口流; 桥数据面仍为 ws://<listen>/ws。
   - FR-10h CLI 兼容: 旧单桥参数等价于建一座桥并启动; --fleet <path> 指定清单。
 
+- **FR-12 自动重连可选 (每桥)**: autoReconnect 默认 true; CLI --reconnect/--no-reconnect;
+  建桥/改配均可设; false 时串口断开直接「已停止」(不重试), 手动打开不受影响;
+  单桥 /api/status 与 fleet 桥对象回显 (契约 12→13 / 14→15 字段)。
+
 ## 3. UI 需求 (UI)
 
+- **UI-1 控件尺度统一 (苹果式)**: 全站控件只允许两档高 —— 标准 34px / 紧凑 28px
+  (令牌 --ctl-h/--ctl-h-sm); 圆角统一 8px, 控件字号 13px, 水平内边距 12px;
+  button/input/select 全部归档, QA 以像素实测断言, 禁止第三种高度。
 - **UI-0 自明性 (最高优先, 用户定性)**: 任何控件不看文档即可猜对; 文案只说用户可感知的
   事情 (串口/网址/连接/网页), **禁用实现词** (重启/换绑/监听/WS/TCP/契约/帧);
   状态用徽章+颜色表达; 危险操作两段确认且预告后果用大白话。

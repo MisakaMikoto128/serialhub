@@ -92,9 +92,11 @@ impl Bridge {
         name: String,
         serial: SerialConfig,
         auto_open: bool,
+        auto_reconnect: bool,
         max_clients: u32,
     ) -> Arc<Bridge> {
         let hub = Arc::new(HubState::new(serial, max_clients));
+        hub.set_auto_reconnect(auto_reconnect); // FR-12: 建桥即定 (改配走 hub)
         let (bc_tx, _) = tokio::sync::broadcast::channel::<Vec<u8>>(1024);
         let ctx = PortCtx {
             hub: hub.clone(),
@@ -176,6 +178,7 @@ impl Bridge {
             "txRate": r1(tx_rate),
             "lastError": s.last_error,
             "retries": s.retries, // ADR-15①: 当次会话内重试计数 (契约 13→14 字段)
+            "autoReconnect": s.auto_reconnect, // FR-12/ADR-16① (契约 14→15 字段)
             "uptimeSec": self.created.elapsed().as_secs(),
             "autoOpen": self.auto_open.load(Ordering::Relaxed),
         })
@@ -295,6 +298,8 @@ pub struct BridgeSpec {
     pub serial: SerialConfig,
     pub listen: SocketAddr,
     pub auto_open: bool,
+    /// FR-12/ADR-16①: 自动重连开关 (默认 true)。
+    pub auto_reconnect: bool,
     pub max_clients: u32,
 }
 
@@ -368,7 +373,14 @@ impl BridgeManager {
         } else {
             spec.name.trim().to_string()
         };
-        let bridge = Bridge::new(id, name, spec.serial.clone(), spec.auto_open, spec.max_clients);
+        let bridge = Bridge::new(
+            id,
+            name,
+            spec.serial.clone(),
+            spec.auto_open,
+            spec.auto_reconnect,
+            spec.max_clients,
+        );
         match bind_with_retry(spec.listen, Duration::from_secs(2)).await {
             Ok(listener) => {
                 let bound = listener
@@ -475,8 +487,9 @@ impl BridgeManager {
         Ok(())
     }
 
-    /// 改配 (FR-10g config): name/串口参数/maxClients/autoOpen; listen 不可改 (FR-10f)。
-    /// 成功即持久化。串口参数沿用"close→config→open"语义 (spec 非目标: 不热改)。
+    /// 改配 (FR-10g config): name/串口参数/maxClients/autoOpen/autoReconnect;
+    /// listen 不可改 (FR-10f)。成功即持久化。串口参数沿用"close→config→open"
+    /// 语义 (spec 非目标: 不热改); autoReconnect 经 apply_config_core 即改即生效。
     pub fn config_bridge(
         &self,
         id: &str,
@@ -521,10 +534,16 @@ pub(crate) struct FleetBridgeRec {
     pub name: String,
     #[serde(rename = "autoOpen", default)]
     pub auto_open: bool,
+    #[serde(rename = "autoReconnect", default = "default_auto_reconnect")]
+    pub auto_reconnect: bool,
     #[serde(rename = "maxClients", default)]
     pub max_clients: u32,
     pub listen: String,
     pub serial: SerialRec,
+}
+
+fn default_auto_reconnect() -> bool {
+    true // FR-12: 旧清单无此字段 → 按默认 true 恢复 (与建桥缺省一致)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -619,6 +638,7 @@ fn rec_of_bridge(b: &Arc<Bridge>) -> FleetBridgeRec {
         id: b.id.clone(),
         name: b.name(),
         auto_open: b.auto_open.load(Ordering::Relaxed),
+        auto_reconnect: b.hub.auto_reconnect(),
         max_clients: b.hub.max_clients(),
         listen: b.listen_addr().to_string(),
         serial: SerialRec::of_config(&b.hub.config()),
@@ -668,6 +688,7 @@ async fn restore_fleet(mgr: &Arc<BridgeManager>) -> usize {
                     serial,
                     listen,
                     auto_open: rec.auto_open,
+                    auto_reconnect: rec.auto_reconnect,
                     max_clients: rec.max_clients,
                 },
                 true,
@@ -711,6 +732,8 @@ pub struct CliBridgeSpec {
     pub name: String,
     pub serial: SerialConfig,
     pub auto_open: bool,
+    /// FR-12/ADR-16①: 自动重连开关 (CLI --reconnect/--no-reconnect, 默认 true)。
+    pub auto_reconnect: bool,
     pub max_clients: u32,
 }
 
@@ -736,6 +759,7 @@ impl ManagerStartup {
                 name: "CLI".into(),
                 serial,
                 auto_open: cli.auto_open(),
+                auto_reconnect: cli.auto_reconnect,
                 max_clients: cli.max_clients,
             }),
         }
@@ -914,6 +938,9 @@ struct FleetCreateReq {
     listen: Option<String>,
     #[serde(rename = "autoOpen", default)]
     auto_open: Option<bool>,
+    /// FR-12/ADR-16①: 自动重连开关 (缺省 true)。
+    #[serde(rename = "autoReconnect", default)]
+    auto_reconnect: Option<bool>,
     #[serde(rename = "maxClients", default)]
     max_clients: Option<u32>,
 }
@@ -969,6 +996,7 @@ async fn fleet_create(
         serial,
         listen,
         auto_open: req.auto_open.unwrap_or(true),
+        auto_reconnect: req.auto_reconnect.unwrap_or(true), // FR-12: 缺省 true
         max_clients: req.max_clients.unwrap_or(0),
     };
     match cs.mgr.create_bridge(spec).await {
@@ -1036,6 +1064,9 @@ struct FleetConfigReq {
     max_clients: Option<u32>,
     #[serde(rename = "autoOpen", default)]
     auto_open: Option<bool>,
+    /// FR-12/ADR-16①: 自动重连开关 (缺省 = 不改动)。
+    #[serde(rename = "autoReconnect", default)]
+    auto_reconnect: Option<bool>,
 }
 
 async fn fleet_config(
@@ -1061,6 +1092,7 @@ async fn fleet_config(
         stop_bits: req.stop_bits,
         flow: req.flow,
         max_clients: req.max_clients,
+        auto_reconnect: req.auto_reconnect, // FR-12: 经 apply_config_core 即改即生效
     };
     if let Some(s) = req.serial {
         cr.port = s.port.or(cr.port);
@@ -1247,6 +1279,7 @@ pub async fn run_manager_with(
                     serial: spec.serial.clone(),
                     listen,
                     auto_open: spec.auto_open && explicit_port,
+                    auto_reconnect: spec.auto_reconnect,
                     max_clients: spec.max_clients,
                 })
                 .await
@@ -1527,6 +1560,7 @@ mod tests {
             id: "b1".into(),
             name: "主桥".into(),
             auto_open: true,
+            auto_reconnect: false,
             max_clients: 4,
             listen: "127.0.0.1:8101".into(),
             serial: SerialRec {
@@ -1541,6 +1575,7 @@ mod tests {
         save_fleet(&path, &recs).unwrap();
         let back = load_fleet(&path).unwrap();
         assert_eq!(back, recs);
+        assert!(!back[0].auto_reconnect, "autoReconnect 原样往返 (FR-12)");
         let cfg = back[0].serial.to_config().unwrap();
         assert_eq!(cfg.port, "COM1");
         assert_eq!(cfg.baud, 921_600);
@@ -1560,6 +1595,7 @@ mod tests {
             id: "b1".into(),
             name: "x".into(),
             auto_open: false,
+            auto_reconnect: true,
             max_clients: 0,
             listen: "127.0.0.1:8101".into(),
             serial: SerialRec {
@@ -1967,6 +2003,7 @@ mod tests {
                 id: "b1".into(),
                 name: "一号".into(),
                 auto_open: false,
+                auto_reconnect: false,
                 max_clients: 0,
                 listen: "127.0.0.1:0".into(),
                 serial: SerialRec {
@@ -1982,6 +2019,7 @@ mod tests {
                 id: "b2".into(),
                 name: "二号".into(),
                 auto_open: false,
+                auto_reconnect: true,
                 max_clients: 2,
                 listen: "127.0.0.1:0".into(),
                 serial: SerialRec {
@@ -2006,6 +2044,9 @@ mod tests {
         assert!(arr[0]["listen"].as_str().unwrap() != "127.0.0.1:0", "应回填实际端口");
         assert_eq!(arr[1]["serial"]["baud"], 9600);
         assert_eq!(arr[1]["maxClients"], 2);
+        // FR-12: autoReconnect 随清单恢复, 不丢
+        assert_eq!(arr[0]["autoReconnect"], false, "恢复后回显 false");
+        assert_eq!(arr[1]["autoReconnect"], true, "恢复后回显 true");
         // 新建桥 id 续号 (b3)
         let v = fleet_create_ok(
             t.addr,
@@ -2024,6 +2065,7 @@ mod tests {
             name: "CLI".into(),
             serial: SerialConfig::default(),
             auto_open: false,
+            auto_reconnect: true,
             max_clients: 0,
         }
     }
@@ -2086,6 +2128,7 @@ mod tests {
             name: "CLI".into(),
             serial: SerialConfig::default(),
             auto_open: false,
+            auto_reconnect: true,
             max_clients: 1, // 模拟 --max-clients 1 启动 (QA 复现条件)
         };
         let t = spawn_mgr(None, Some(cli)).await;
@@ -2231,7 +2274,7 @@ mod tests {
     #[tokio::test]
     async fn bridge_rate_shows_in_detail() {
         // 独立 Bridge (无管理器采样任务干扰): push 可控时间戳
-        let b = Bridge::new("bx".into(), "t".into(), SerialConfig::default(), false, 0);
+        let b = Bridge::new("bx".into(), "t".into(), SerialConfig::default(), false, true, 0);
         let t0 = Instant::now();
         lock_mutex(&b.rates).push(t0, 0, 0);
         b.hub.add_rx(500);
@@ -2304,11 +2347,12 @@ mod tests {
         t.shutdown().await;
     }
 
-    /// ADR-15①: fleet 桥对象契约字段集 13→14 —— 原 13 契约字段 (与 QA conftest
-    /// FLEET_ROW_FIELDS 同源) + retries (u32)。列表行与单桥详情同构, 必须都回显;
-    /// 除已声明的内部字段 (running/autoOpen) 外不得缺字段, 也不得混入未裁定字段。
+    /// ADR-15①/ADR-16①: fleet 桥对象契约字段集 14→15 —— 原 14 契约字段
+    /// (与 QA conftest FLEET_ROW_FIELDS 同源) + autoReconnect (bool, FR-12)。
+    /// 列表行与单桥详情同构, 必须都回显; 除已声明的内部字段 (running/autoOpen)
+    /// 外不得缺字段, 也不得混入未裁定字段。
     #[tokio::test(flavor = "multi_thread")]
-    async fn fleet_bridge_object_contract_14_fields() {
+    async fn fleet_bridge_object_contract_15_fields() {
         use std::collections::HashSet;
         let t = spawn_mgr(None, None).await;
         fleet_create_ok(
@@ -2330,7 +2374,8 @@ mod tests {
             "lastError",
             "uptimeSec",
             "maxClients",
-            "retries", // ADR-15① 新增 (13→14)
+            "retries",        // ADR-15① 新增 (13→14)
+            "autoReconnect",  // ADR-16① 新增 (14→15)
         ]
         .into_iter()
         .collect();
@@ -2353,6 +2398,11 @@ mod tests {
                 Some(0),
                 "{where_} retries 须为非负整数 (初值 0): {row}"
             );
+            assert_eq!(
+                row["autoReconnect"].as_bool(),
+                Some(true),
+                "{where_} autoReconnect 须为 bool (缺省 true): {row}"
+            );
         };
         let (_, resp) = http_req(t.addr, "GET", "/api/fleet", None).await;
         let v: Value = serde_json::from_str(&resp).unwrap();
@@ -2360,6 +2410,97 @@ mod tests {
         let (_, resp) = http_req(t.addr, "GET", "/api/fleet/b1", None).await;
         let v: Value = serde_json::from_str(&resp).unwrap();
         check(&v["bridge"], "单桥详情");
+        t.shutdown().await;
+    }
+
+    /// FR-12/ADR-16①: autoReconnect 全链路 —— 建桥缺省 true / 显式 false 受理 /
+    /// PATCH+POST 改配往返 / fleet.json 变更即写 / 恢复不丢。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fleet_auto_reconnect_default_create_config_and_persist() {
+        let path = temp_fleet("reconn");
+        let t = spawn_mgr(Some(path.clone()), None).await;
+        // 建桥不带 autoReconnect → 缺省 true
+        fleet_create_ok(
+            t.addr,
+            r#"{"name":"默认桥","serial":{"port":"COM1"},"listen":"127.0.0.1:0","autoOpen":false}"#,
+        )
+        .await;
+        // 建桥显式 autoReconnect=false → 受理
+        fleet_create_ok(
+            t.addr,
+            r#"{"name":"停桥","serial":{"port":"COM2"},"listen":"127.0.0.1:0","autoOpen":false,"autoReconnect":false}"#,
+        )
+        .await;
+        let (_, resp) = http_req(t.addr, "GET", "/api/fleet", None).await;
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        let arr = v["bridges"].as_array().unwrap();
+        assert_eq!(arr[0]["autoReconnect"], true, "建桥缺省 true");
+        assert_eq!(arr[1]["autoReconnect"], false, "建桥显式 false 受理");
+        // 建桥即持久化, 字段不丢
+        let recs = load_fleet(&path).unwrap();
+        assert!(recs[0].auto_reconnect);
+        assert!(!recs[1].auto_reconnect);
+        // PATCH 改配 true→false→true 往返
+        let (code, resp) = http_req(
+            t.addr,
+            "PATCH",
+            "/api/fleet/b1/config",
+            Some(r#"{"autoReconnect":false}"#),
+        )
+        .await;
+        assert_eq!(code, 200, "{resp}");
+        let (_, resp) = http_req(t.addr, "GET", "/api/fleet/b1", None).await;
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["bridge"]["autoReconnect"], false, "PATCH 关闭须生效");
+        let (code, _) = http_req(
+            t.addr,
+            "POST",
+            "/api/fleet/b1/config",
+            Some(r#"{"autoReconnect":true}"#),
+        )
+        .await;
+        assert_eq!(code, 200);
+        let (_, resp) = http_req(t.addr, "GET", "/api/fleet/b1", None).await;
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["bridge"]["autoReconnect"], true, "POST 重开须生效");
+        // 改配即持久化
+        let recs = load_fleet(&path).unwrap();
+        assert!(recs[0].auto_reconnect, "改配 true 须写进清单");
+        assert!(!recs[1].auto_reconnect, "b2 须保持 false 不被静默清改");
+        t.shutdown().await;
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// FR-12: 单桥兼容 POST /api/config 也受理 autoReconnect (FR-10h 分发语义);
+    /// /api/status 回显 13 字段契约中的 autoReconnect。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn compat_legacy_config_auto_reconnect_accepted() {
+        let t = spawn_mgr(None, Some(compat_spec())).await;
+        let (_, resp) = http_req(t.addr, "GET", "/api/status", None).await;
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["autoReconnect"], true, "单桥 status 默认 true");
+        // 兼容端点关闭
+        let (code, resp) = http_req(
+            t.addr,
+            "POST",
+            "/api/config",
+            Some(r#"{"autoReconnect":false}"#),
+        )
+        .await;
+        assert_eq!(code, 200, "{resp}");
+        let (_, resp) = http_req(t.addr, "GET", "/api/status", None).await;
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["autoReconnect"], false, "POST /api/config 关闭须生效");
+        // fleet 详情同源回显 (同一 HubState, 单一真相)
+        let (_, resp) = http_req(t.addr, "GET", "/api/fleet/b1", None).await;
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["bridge"]["autoReconnect"], false);
+        // 兼容端点重开
+        let (code, _) = http_req(t.addr, "POST", "/api/config", Some(r#"{"autoReconnect":true}"#)).await;
+        assert_eq!(code, 200);
+        let (_, resp) = http_req(t.addr, "GET", "/api/status", None).await;
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["autoReconnect"], true);
         t.shutdown().await;
     }
 

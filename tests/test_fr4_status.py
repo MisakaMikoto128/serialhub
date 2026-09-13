@@ -10,19 +10,22 @@ from __future__ import annotations
 import threading
 import time
 
-from conftest import (STATUS_FIELDS, join_collectors, read_exactly,
-                      serial_write_all, start_ws_collectors, wait_all_ready,
-                      ws_send_and_hold)
+from conftest import (join_collectors, read_exactly,
+                      serial_write_all, start_ws_collectors, status_fields_expected,
+                      wait_all_ready, ws_send_and_hold)
 
 
 def test_fr4_status_contract(start_bridge, make_peer):
-    """/api/status 恰 12 字段 (ADR-11 修订 ADR-9 ①; ADR-15① Sprint 5 随动修订 11→12 增 retries),
+    """/api/status 恰 13 字段 (ADR-11 修订 ADR-9 ①; ADR-15① Sprint 5 随动修订 11→12 增 retries;
+    ADR-16① Sprint 6 随动修订 12→13 增 autoReconnect),
     初始计数与相位合理, uptimeSec 随进程时间增长 (②)。"""
     b = start_bridge()
     st = b.status()
-    assert set(st.keys()) == STATUS_FIELDS, (
-        f"ADR-11/ADR-15① 字段集合不符: 多 {set(st) - STATUS_FIELDS}, "
-        f"少 {STATUS_FIELDS - set(st)}")
+    # ADR-16① 渐进放行: autoReconnect 未落地时按旧 12 字段契约守护, 落地即 13 字段全量
+    # (仅容忍该一字段缺席, 其它多/少字段当场违约; 见 conftest.status_fields_expected)
+    assert set(st.keys()) == status_fields_expected(st), (
+        f"ADR-11/ADR-15①/ADR-16① 字段集合不符: 多 {set(st) - status_fields_expected(st)}, "
+        f"少 {status_fields_expected(st) - set(st)}")
     assert isinstance(st["phase"], str)
     assert isinstance(st["port"], str) and st["port"] == "COM1"
     assert st["baud"] == 115200
