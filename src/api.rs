@@ -6,6 +6,10 @@
 //!   上行 = 丢进 tx 队列由单写者串行写串口;
 //! - 任何客户端断开/乱帧/协议错误只 break 循环, 绝不 panic;
 //!   clients 计数用 Drop 兜底, 即使任务被取消也不会漏减。
+//!
+//! Sprint 4 (FR-10): handler 逻辑抽成 `*_core` 纯函数 (入参 = 桥的 PortCtx/cmd_tx,
+//! 不依赖 axum State), 供两处复用 —— 本模块 legacy 单桥路由 + fleet.rs 的
+//! 管理台 (兼容分发与每桥数据面)。核心逻辑一字不改, 语义零变化。
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
@@ -23,7 +27,6 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config;
-use crate::hub::StatusJson;
 use crate::serial::{list_ports, PortCtx};
 use crate::supervisor::HubCmd;
 
@@ -59,8 +62,13 @@ async fn index(State(app): State<App>) -> Html<&'static str> {
     Html(app.index)
 }
 
-async fn status(State(app): State<App>) -> Json<StatusJson> {
-    Json(app.ctx.hub.status_json())
+/// GET /api/status 核心 (管理台兼容分发复用)。
+pub(crate) fn status_core(ctx: &PortCtx) -> Response {
+    Json(ctx.hub.status_json()).into_response()
+}
+
+async fn status(State(app): State<App>) -> Response {
+    status_core(&app.ctx)
 }
 
 #[derive(serde::Serialize)]
@@ -75,37 +83,41 @@ struct PortEntry {
 }
 
 /// 契约: {"ports":[{"name":"COM1","desc":"..."}]}, 每项恰好两个字段。
-async fn ports() -> Json<PortsResp> {
+pub(crate) fn ports_core() -> Response {
     Json(PortsResp {
         ports: list_ports()
             .into_iter()
             .map(|(name, desc)| PortEntry { name, desc })
             .collect(),
     })
+    .into_response()
+}
+
+async fn ports() -> Response {
+    ports_core()
 }
 
 #[derive(Deserialize)]
-struct ConfigReq {
-    port: Option<String>,
-    baud: Option<u32>,
+pub(crate) struct ConfigReq {
+    #[allow(dead_code)] // fleet.rs 直接构造本结构 (字段全 Option)
+    pub(crate) port: Option<String>,
+    pub(crate) baud: Option<u32>,
     #[serde(rename = "dataBits")]
-    data_bits: Option<u8>,
-    parity: Option<String>,
+    pub(crate) data_bits: Option<u8>,
+    pub(crate) parity: Option<String>,
     #[serde(rename = "stopBits")]
-    stop_bits: Option<u8>,
-    flow: Option<String>,
+    pub(crate) stop_bits: Option<u8>,
+    pub(crate) flow: Option<String>,
     /// FR-9b: 最大客户端数, 0 = 不限。
+    /// (qa-sprint4 DEF-1 回归: rename 不可缺 —— 缺了 "maxClients" 会被当未知字段
+    /// 静默忽略, 兼容端点 POST /api/config 即失效, FR-9b/ADR-9b① 违约。)
     #[serde(rename = "maxClients")]
-    max_clients: Option<u32>,
+    pub(crate) max_clients: Option<u32>,
 }
 
 /// 全字段可省: 只更新给出的字段 (方便部分修改); 校验失败整体拒绝, 不做半套更新。
-async fn set_config(State(app): State<App>, body: Result<Json<ConfigReq>, JsonRejection>) -> Response {
-    let Json(req) = match body {
-        Ok(b) => b,
-        Err(rej) => return bad(format!("请求体不是合法 JSON: {rej}")),
-    };
-    let mut cfg = app.ctx.hub.config();
+pub(crate) fn apply_config_core(ctx: &PortCtx, req: ConfigReq) -> Response {
+    let mut cfg = ctx.hub.config();
     if let Some(p) = req.port {
         cfg.port = p.trim().to_string();
     }
@@ -140,34 +152,53 @@ async fn set_config(State(app): State<App>, body: Result<Json<ConfigReq>, JsonRe
         }
     }
     if let Some(m) = req.max_clients {
-        app.ctx.hub.set_max_clients(m); // 0 = 不限, 无上限校验 (u32)
+        ctx.hub.set_max_clients(m); // 0 = 不限, 无上限校验 (u32)
     }
-    app.ctx.hub.update_config(cfg);
+    ctx.hub.update_config(cfg);
     ok()
 }
 
+async fn set_config(State(app): State<App>, body: Result<Json<ConfigReq>, JsonRejection>) -> Response {
+    match body {
+        Ok(Json(req)) => apply_config_core(&app.ctx, req),
+        Err(rej) => bad(format!("请求体不是合法 JSON: {rej}")),
+    }
+}
+
 /// 打开是异步的: 这里只受理指令, 相位经 /api/status 观察 (opening→open/retry)。
-async fn open(State(app): State<App>) -> Response {
-    if app.ctx.hub.config().port.is_empty() {
+pub(crate) fn open_core(ctx: &PortCtx, cmd_tx: &UnboundedSender<HubCmd>) -> Response {
+    if ctx.hub.config().port.is_empty() {
         return bad("未配置串口: 先在控制台选择串口, 或用 --port 指定".into());
     }
-    let _ = app.cmd_tx.send(HubCmd::Open);
+    let _ = cmd_tx.send(HubCmd::Open);
+    ok()
+}
+
+async fn open(State(app): State<App>) -> Response {
+    open_core(&app.ctx, &app.cmd_tx)
+}
+
+pub(crate) fn close_core(cmd_tx: &UnboundedSender<HubCmd>) -> Response {
+    let _ = cmd_tx.send(HubCmd::Close);
     ok()
 }
 
 async fn close(State(app): State<App>) -> Response {
-    let _ = app.cmd_tx.send(HubCmd::Close);
-    ok()
+    close_core(&app.cmd_tx)
 }
 
 /// FR-9a/ADR-12: 改监听地址 = **原地换绑** (headless 与 GUI 一视同仁, 均不重启进程) ——
 /// 校验并登记新地址, serve 循环退出当前 TCP 面后重 bind; 串口会话/状态/托盘全程不动。
 #[derive(Deserialize)]
-struct RestartReq {
+pub(crate) struct RestartReq {
     addr: String,
 }
 
-async fn restart(State(app): State<App>, body: Result<Json<RestartReq>, JsonRejection>) -> Response {
+/// FR-9a/ADR-12 核心: 校验并登记换址目标 (登记槽由服务循环消费, 原地换绑)。
+pub(crate) fn restart_core(
+    restart_to: &Arc<std::sync::Mutex<Option<String>>>,
+    body: Result<Json<RestartReq>, JsonRejection>,
+) -> Response {
     let Json(req) = match body {
         Ok(b) => b,
         Err(rej) => return bad(format!("请求体不是合法 JSON: {rej}")),
@@ -181,23 +212,32 @@ async fn restart(State(app): State<App>, body: Result<Json<RestartReq>, JsonReje
             ))
         }
     };
-    *crate::hub::lock_mutex(&app.restart_to) = Some(new_addr.to_string());
+    *crate::hub::lock_mutex(restart_to) = Some(new_addr.to_string());
     ok()
+}
+
+async fn restart(State(app): State<App>, body: Result<Json<RestartReq>, JsonRejection>) -> Response {
+    restart_core(&app.restart_to, body)
 }
 
 /// FR-4⑤/ADR-8: 优雅停机整进程 —— 与托盘「退出」完全同一序列
 /// (watch → axum 优雅退出 → Close → stop_active → Stopped → 进程退出)。
 /// 退出路径必须有冗余, 不能只依赖托盘菜单 (Sprint2 UX P1-1)。
-async fn shutdown(State(app): State<App>) -> Response {
-    let _ = app.shutdown_tx.send(true);
+/// FR-4⑤/ADR-8 核心: 优雅停机整进程 —— 与托盘「退出」完全同一序列。
+pub(crate) fn shutdown_core(shutdown_tx: &tokio::sync::watch::Sender<bool>) -> Response {
+    let _ = shutdown_tx.send(true);
     ok()
 }
 
-fn ok() -> Response {
+async fn shutdown(State(app): State<App>) -> Response {
+    shutdown_core(&app.shutdown_tx)
+}
+
+pub(crate) fn ok() -> Response {
     Json(json!({"ok": true})).into_response()
 }
 
-fn bad(msg: String) -> Response {
+pub(crate) fn bad(msg: String) -> Response {
     (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": msg}))).into_response()
 }
 
@@ -207,7 +247,10 @@ async fn ws_upgrade(ws: WebSocketUpgrade, State(app): State<App>) -> Response {
     ws.on_upgrade(move |socket| client_loop(socket, app))
 }
 
-async fn client_loop(mut socket: WebSocket, app: App) {
+/// 数据面客户端主循环 (FR-10 起供三处复用: legacy 单桥 /ws、每桥数据面、管理台兼容分发)。
+/// app.shutdown_tx 应传**该桥的停机 watch** —— 桥停/删/进程退出都会主动断开 WS,
+/// 优雅停机才不会被长连接卡住。
+pub(crate) async fn client_loop(mut socket: WebSocket, app: App) {
     // FR-9b: 握手后若客户端已满, 以 close 1013 (Try Again Later) 拒绝新连接,
     // 且不计入 clients (未 client_inc); 老客户端不受影响。
     let max = app.ctx.hub.max_clients();

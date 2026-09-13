@@ -15,6 +15,8 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+import os
+import re
 import socket
 import subprocess
 import tempfile
@@ -133,7 +135,8 @@ class Bridge:
                     + _tail(self.log_path))
             try:
                 code, _ = self.get("/api/status")
-                if code == 200:
+                # 409 = 控制面已就绪但非单桥模式 (多桥时旧单桥接口按契约拒绝, 黑盒实证)
+                if code in (200, 409):
                     return
             except Exception:
                 pass
@@ -173,14 +176,35 @@ class Bridge:
 _LOG_DIR = Path(tempfile.mkdtemp(prefix="serialhub_qa_logs_"))
 _counter = itertools.count(1)
 
+# FR-10 落地后的全局默认清单 (后端默认持久化位置); 测试卫生对象
+_GLOBAL_FLEET = Path(os.environ.get("APPDATA", "")) / "SerialHub" / "fleet.json"
+
+
+def sanitize_global_fleet() -> None:
+    """删除全局默认 fleet.json —— 仅当其中全部桥名都是测试产物 (CLI 兼容桥 / qa-*)。
+
+    旧式单桥进程 (FR-10h 兼容桥) 会把桥持久化到全局默认清单, 下次任何进程启动都会
+    恢复它们 → 多桥 → 旧端点 /api/status 变 409 (实现: 单桥模式守卫) → 全套件被污染。
+    含非测试命名桥 (真实用户配置) 时不动文件, 仅放行 (此时套件失败会如实暴露)。
+    """
+    try:
+        data = json.loads(_GLOBAL_FLEET.read_text("utf-8"))
+        names = [str(b.get("name", "")) for b in data.get("bridges", [])]
+        if names and all(re.fullmatch(r"(CLI|qa-).*", n) for n in names):
+            _GLOBAL_FLEET.unlink()
+    except (OSError, ValueError):
+        pass  # 文件不存在 / 非 JSON / 路径不可用 → 无需处理
+
 
 @pytest.fixture(scope="session", autouse=True)
 def _session_hygiene():
     assert BRIDGE_EXE.exists(), (
         f"未找到 {BRIDGE_EXE} —— 请先在项目根执行 cargo build --release")
     kill_all_bridges()   # 清理上次运行可能残留的桥进程
+    sanitize_global_fleet()
     yield
     kill_all_bridges()   # 会话结束兜底: 不得残留占 COM1 的进程
+    sanitize_global_fleet()
 
 
 @pytest.fixture
@@ -193,7 +217,7 @@ def start_bridge():
     started: list[Bridge] = []
 
     def _start(port_name=BRIDGE_COM, baud=115200, config="8N2",
-               flow=None, max_clients=None, extra=None, wait=True) -> Bridge:
+               flow=None, max_clients=None, extra=None, wait=True, cwd=None) -> Bridge:
         http_port = free_tcp_port()
         # Sprint 2 起二进制默认 GUI 模式; 套件要旧行为 (无窗口), 统一加 --headless
         cmd = [str(BRIDGE_EXE), "--headless"]
@@ -204,11 +228,16 @@ def start_bridge():
             if max_clients is not None:
                 cmd += ["--max-clients", str(max_clients)]   # FR-9b
         cmd += ["--addr", f"{HTTP_HOST}:{http_port}"]
+        # FR-10 落地 (Sprint 4): 旧式单桥进程默认持久化到全局 fleet.json 且下次启动恢复,
+        # 会污染整套件 (多桥 → /api/status 409)。--no-fleet = 旧二进制语义 (本无持久化),
+        # 单桥行为零变化; 需要持久化语义的用例在 extra 里自带 --fleet 覆盖 (clap 末位生效)。
+        cmd += ["--no-fleet"]
         if extra:
             cmd += extra
         log = _LOG_DIR / f"bridge_{next(_counter)}.log"
         lf = open(log, "w", encoding="utf-8")
-        proc = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT)
+        # cwd 仅 FR-10h 兼容测试使用 (隔离后端默认 fleet.json 的落盘副作用), 旧路径不受影响
+        proc = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, cwd=cwd)
         b = Bridge(proc, http_port, log)
         b._log_handle = lf
         started.append(b)
@@ -352,6 +381,378 @@ def join_collectors(th: threading.Thread, box: dict, timeout: float = 60.0):
     if "error" in box:
         raise box["error"]
     return box["payloads"]
+
+
+# ==================================================================
+# FR-10 桥接管理器扩展区 (Sprint 4, ADR-13) —— 不影响上方 Sprint1~3 夹具
+# ==================================================================
+
+# 任务契约 (spec FR-10g/FR-10c): fleet 列表行必须齐备的字段。
+# 计数器命名沿 ADR-6② (rxBytes/txBytes, 与 /api/status 同名同义); maxClients 为 ADR-14②
+# 新增的强制回显字段。波1 任务速记 "rx/tx" 与实现分歧, 修订记录见 qa-sprint4.md。
+FLEET_ROW_FIELDS = {"id", "name", "serial", "listen", "phase", "clients",
+                    "rxBytes", "txBytes", "rxRate", "txRate", "lastError",
+                    "uptimeSec", "maxClients"}
+
+
+def serial_port_of(row: dict):
+    """取桥行串口名; 兼容扁平 "COM1" 与嵌套 {port, baud, ...} 两种回显形状。"""
+    s = row.get("serial")
+    if isinstance(s, dict):
+        return s.get("port")
+    return s
+
+
+def take_port(preferred: int | None = None) -> int:
+    """优先取偏好端口 (如任务示例 8101/8102), 被占则退回临时端口。"""
+    if preferred is not None:
+        s = socket.socket()
+        try:
+            s.bind((HTTP_HOST, preferred))
+            s.close()
+            return preferred
+        except OSError:
+            s.close()
+    return free_tcp_port()
+
+
+def wait_port_free(port: int, timeout: float = 8.0) -> None:
+    """轮询直到 TCP 端口可再次 bind (delete/杀进程后的'端口释放'判据)。"""
+    deadline = time.monotonic() + timeout
+    last: Exception | None = None
+    while time.monotonic() < deadline:
+        s = socket.socket()
+        try:
+            s.bind((HTTP_HOST, port))
+            s.close()
+            return
+        except OSError as e:
+            last = e
+            s.close()
+            time.sleep(0.1)
+    raise AssertionError(f"{timeout}s 内端口 {port} 未释放: {last}")
+
+
+def hard_kill(b: Bridge, timeout: float = 8.0) -> None:
+    """taskkill /F 强杀被测进程 (模拟崩溃/断电, 供持久化测试); 不走优雅停机。"""
+    if b.proc.poll() is None:
+        subprocess.run(["taskkill", "/F", "/PID", str(b.proc.pid), "/T"],
+                       capture_output=True, check=False)
+        try:
+            b.proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def wait_serial_free(port_name: str, timeout: float = 8.0) -> None:
+    """轮询直到串口可打开 (桥 stop 后句柄异步释放, Windows 下存在短延迟)。
+
+    长时间不释放 = 桥 stop 未真关串口, 属实现缺陷, 如实暴露。
+    """
+    deadline = time.monotonic() + timeout
+    last: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            s = serial.Serial(port=port_name)
+            s.close()
+            return
+        except serial.SerialException as e:
+            last = e
+            time.sleep(0.2)
+    raise AssertionError(f"{timeout}s 内串口 {port_name} 未释放: {last}")
+
+
+def listen_port_of(val) -> int:
+    """从 listen 字段提取端口号; 接受 '127.0.0.1:8101' / '8101' / 8101 / {'port': 8101}。"""
+    if isinstance(val, dict):
+        if "port" in val:
+            return int(val["port"])
+        val = json.dumps(val)
+    if isinstance(val, (int, float)):
+        return int(val)
+    s = str(val).strip().strip("/")
+    if ":" in s:
+        s = s.rsplit(":", 1)[1]
+    if "/" in s:
+        s = s.split("/", 1)[0]
+    return int(s)
+
+
+def _row_listen_port(row: dict) -> int | None:
+    try:
+        return listen_port_of(row.get("listen"))
+    except (TypeError, ValueError):
+        return None
+
+
+def fleet_rows(api: Bridge) -> list:
+    """GET /api/fleet → 行列表 (信封未定: 裸列表或单列表字段字典均可, 见 qa-sprint4-plan 假设)。"""
+    code, body = api.get("/api/fleet")
+    assert code == 200, f"GET /api/fleet -> {code}: {body!r}"
+    if isinstance(body, list):
+        return body
+    if isinstance(body, dict):
+        cand = [v for v in body.values()
+                if isinstance(v, list) and v
+                and all(isinstance(r, dict) and "id" in r for r in v)]
+        if not cand:
+            cand = [v for v in body.values() if isinstance(v, list)]
+        assert len(cand) == 1, f"/api/fleet 信封无唯一列表字段: {body!r}"
+        return cand[0]
+    raise AssertionError(f"/api/fleet 返回非列表结构: {body!r}")
+
+
+def row_of(api: Bridge, ident) -> dict | None:
+    """按 id 或 listen 端口取单行 (单次, 不等待)。"""
+    for r in fleet_rows(api):
+        if r.get("id") == ident or _row_listen_port(r) == ident:
+            return r
+    return None
+
+
+def fleet_create(api: Bridge, name: str, serial_port: str, listen_port: int,
+                 baud: int = 115200, config: str = "8N1", flow: str = "none"):
+    """POST /api/fleet 新建桥。
+
+    契约形状 (黑盒实证 + ADR-14③ "受理 create 形状 body"): serial 为嵌套 SerialReq
+    对象 {port, baud, dataBits, parity, stopBits, flow}, 与桥对象回显一致。
+    """
+    body = {"name": name,
+            "serial": {"port": serial_port, "baud": baud,
+                       "dataBits": int(config[0]), "parity": config[1],
+                       "stopBits": int(config[2]), "flow": flow},
+            "listen": f"{HTTP_HOST}:{listen_port}"}
+    code, resp = api.post("/api/fleet", body)
+    return code, resp
+
+
+def _post_ok(code: int, body, action: str) -> None:
+    """POST 成功判据 (沿 ADR-5③ 家族): 2xx 且非 {ok:false}。"""
+    assert code in (200, 201) and not (isinstance(body, dict) and body.get("ok") is False), \
+        f"POST {action} -> {code}: {body!r}"
+
+
+def fleet_act_ok(api: Bridge, bid, action: str, timeout: float = 5.0) -> None:
+    code, body = None, None
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            code, body = api.post(f"/api/fleet/{bid}/{action}", {})
+            if code in (200, 201):
+                break
+        except Exception:
+            pass
+        time.sleep(0.1)
+    _post_ok(code, body, f"/api/fleet/{bid}/{action}")
+
+
+def fleet_purge(api: Bridge) -> None:
+    """删除当前全部桥, 保证行数类断言的确定性。
+
+    背景 (黑盒实证): 纯控制面进程 (无 --port 且无恢复桥) 会自动播种一座空白兼容桥
+    (name=CLI, serial.port="", phase=closed, FR-5"未打开态"的 fleet 化)。行数断言前先清场。
+    """
+    for r in fleet_rows(api):
+        code, body = api.post(f"/api/fleet/{r['id']}/delete", {})
+        if code >= 400 or (isinstance(body, dict) and body.get("ok") is False):
+            api.post(f"/api/fleet/{r['id']}/stop", {})   # 若 delete 有"须先停"前置则退一步
+            code, body = api.post(f"/api/fleet/{r['id']}/delete", {})
+        assert code in (200, 201) and not (isinstance(body, dict) and body.get("ok") is False), \
+            f"purge 删除 {r['id']} 失败: {code}: {body!r}"
+    assert fleet_rows(api) == [], "purge 后仍有残留桥"
+
+
+def fleet_new_id(api: Bridge, create_resp, listen_port: int):
+    """解析新建桥 id: 优先响应体 id 字段, 否则以 listen 端口在列表中定位。"""
+    if isinstance(create_resp, dict) and isinstance(create_resp.get("id"), (str, int)):
+        return create_resp["id"]
+    hits = [r["id"] for r in fleet_rows(api) if _row_listen_port(r) == listen_port]
+    assert len(hits) == 1, (
+        f"无法定位新建桥 id (listen={listen_port}): resp={create_resp!r} rows={fleet_rows(api)!r}")
+    return hits[0]
+
+
+def assert_row_shape(row: dict) -> None:
+    """FR-10g/FR-10c + ADR-14②: 行字段齐全 + 类型合理 + phase ∈ FR-3 状态机四态。"""
+    assert isinstance(row, dict), f"fleet 行非对象: {row!r}"
+    missing = FLEET_ROW_FIELDS - set(row)
+    assert not missing, f"fleet 行缺字段 {sorted(missing)}: {row!r}"
+    for k in ("clients", "rxBytes", "txBytes", "rxRate", "txRate", "uptimeSec",
+              "maxClients"):
+        assert isinstance(row[k], (int, float)) and not isinstance(row[k], bool) \
+            and row[k] >= 0, f"{k} 应为非负数值: {row[k]!r}"
+    assert row["phase"] in {"closed", "opening", "open", "retry"}, \
+        f"phase 越出 FR-3 状态机: {row['phase']!r}"
+    assert row["lastError"] is None or isinstance(row["lastError"], str), \
+        f"lastError 应为 null 或字符串: {row['lastError']!r}"
+
+
+def wait_row_phase(api: Bridge, ident, phase: str, timeout: float = 12.0) -> dict:
+    """轮询直到 id/listen 定位的桥行进入目标 phase。"""
+    deadline = time.monotonic() + timeout
+    row, rows = None, []
+    while time.monotonic() < deadline:
+        rows = fleet_rows(api)
+        row = next((r for r in rows
+                    if r.get("id") == ident or _row_listen_port(r) == ident), None)
+        if row is not None and row.get("phase") == phase:
+            return row
+        time.sleep(0.1)
+    raise AssertionError(f"{timeout}s 内桥 {ident!r} phase 未到 {phase!r}, rows={rows!r}")
+
+
+def wait_counters(api: Bridge, port: int, want_tx: int, want_rx: int,
+                  timeout: float = 8.0) -> dict:
+    """轮询直到该桥累计 rxBytes/txBytes 恰达预期值 (逐字节对账判据, ADR-6② 口径)。"""
+    deadline = time.monotonic() + timeout
+    row = None
+    while time.monotonic() < deadline:
+        row = row_of(api, port)
+        if row and int(row.get("txBytes") or 0) >= want_tx \
+                and int(row.get("rxBytes") or 0) >= want_rx:
+            break
+        time.sleep(0.1)
+    assert row is not None, f"listen={port} 的桥行消失"
+    assert row["txBytes"] == want_tx and row["rxBytes"] == want_rx, \
+        (f"桥({port}) 计数对账失败: txBytes={row['txBytes']}(望{want_tx}) "
+         f"rxBytes={row['rxBytes']}(望{want_rx}) —— 串扰/丢字节")
+    return row
+
+
+def ws_collect_exact(url: str, expect: bytes, *, quiet_s: float = 0.0,
+                     allow_text: bool = False, timeout: float = 30.0):
+    """收集恰 len(expect) 字节后返回; quiet_s>0 追加静默守窗 (再多 1 字节 = 串扰/回显 FAIL)。
+
+    allow_text=True 时跳过文本帧 (仅 tap 旁看用 —— 任务契约只要求收到 RX 字节, 不锁帧格式)。
+    返回 (thread, ready_event, box); box["payload"]/box["error"]。
+    """
+    ready = threading.Event()
+    box: dict = {}
+
+    def _run():
+        async def _main():
+            async with websockets.connect(url, max_size=None) as ws:
+                ready.set()
+                buf = bytearray()
+                while len(buf) < len(expect):
+                    msg = await asyncio.wait_for(ws.recv(), timeout=timeout)
+                    if isinstance(msg, (bytes, bytearray)):
+                        buf += msg
+                    elif not allow_text:
+                        raise AssertionError(
+                            f"收到非二进制帧: {type(msg).__name__}={msg!r}")
+                if quiet_s > 0:
+                    try:
+                        extra = await asyncio.wait_for(ws.recv(), timeout=quiet_s)
+                        raise AssertionError(f"静默守窗期收到多余数据 {extra!r} (串扰/回显)")
+                    except asyncio.TimeoutError:
+                        pass
+                return bytes(buf)
+        try:
+            box["payload"] = asyncio.run(_main())
+        except BaseException as e:  # noqa: BLE001
+            box["error"] = e
+
+    th = threading.Thread(target=_run, daemon=True)
+    th.start()
+    return th, ready, box
+
+
+def ws_push(url: str, frames):
+    """发射器: 连上即发 frames, 发完即断。返回 (thread, done_event, box)。"""
+    done = threading.Event()
+    box: dict = {}
+
+    def _run():
+        async def _main():
+            async with websockets.connect(url, max_size=None) as ws:
+                for f in frames:
+                    await ws.send(f)
+        try:
+            asyncio.run(_main())
+        except BaseException as e:  # noqa: BLE001
+            box["error"] = e
+        finally:
+            done.set()
+
+    th = threading.Thread(target=_run, daemon=True)
+    th.start()
+    return th, done, box
+
+
+@pytest.fixture(scope="session")
+def fleet_ready():
+    """FR-10 后端就绪探针 (会话级一次): 控制面 /api/fleet 不存在 → 整组 [BLOCKED-BY-BACKEND] 跳过。
+
+    不改任何预期 —— 只是把"实现未到位"与"实现违约"区分开; 实现落地后本探针放行, 套件即书即跑。
+    """
+    kill_all_bridges()
+    port = free_tcp_port()
+    fdir = Path(tempfile.mkdtemp(prefix="serialhub_fr10_probe_"))
+    cmd = [str(BRIDGE_EXE), "--headless", "--addr", f"{HTTP_HOST}:{port}",
+           "--fleet", str(fdir / "fleet.json")]
+    code, proc = None, None
+    with open(fdir / "probe.log", "w", encoding="utf-8") as lf:
+        proc = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT)
+        try:
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    break
+                try:
+                    code, _ = http_get(f"http://{HTTP_HOST}:{port}/api/fleet")
+                    if code == 200:
+                        break
+                except Exception:
+                    code = None
+                time.sleep(0.1)
+        finally:
+            if proc.poll() is None:
+                subprocess.run(["taskkill", "/F", "/PID", str(proc.pid), "/T"],
+                               capture_output=True, check=False)
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+    if code == 200:
+        return True
+    pytest.skip(
+        "[BLOCKED-BY-BACKEND] FR-10 控制面未实现: GET /api/fleet -> "
+        f"{code}, 进程退出码 {proc.returncode}, 日志: {fdir / 'probe.log'}")
+
+
+@pytest.fixture
+def start_fleet():
+    """FR-10 控制面进程工厂: --headless --addr <自由端口> --fleet <临时清单>; 每条测试自管进程。
+
+    fleet_path=False 时不传 --fleet (探测后端默认持久化行为用)。
+    """
+    started: list[Bridge] = []
+
+    def _start(fleet_path=None, extra=None, wait=True) -> Bridge:
+        http_port = free_tcp_port()
+        if fleet_path is None:
+            fleet_path = Path(tempfile.mkdtemp(prefix="serialhub_fr10_")) / "fleet.json"
+        cmd = [str(BRIDGE_EXE), "--headless", "--addr", f"{HTTP_HOST}:{http_port}"]
+        if fleet_path is not False:
+            cmd += ["--fleet", str(fleet_path)]
+        if extra:
+            cmd += list(extra)
+        log = _LOG_DIR / f"fleet_{next(_counter)}.log"
+        lf = open(log, "w", encoding="utf-8")
+        proc = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT)
+        b = Bridge(proc, http_port, log)
+        b.fleet_path = fleet_path
+        b._log_handle = lf
+        started.append(b)
+        if wait:
+            b.wait_http_ready()
+        return b
+
+    yield _start
+    for b in started:
+        b.stop()
+    kill_all_bridges()   # 双保险: 不得残留占 COM1/COM2 的进程
 
 
 # ------------------------------------------------------------------ pytest 配置

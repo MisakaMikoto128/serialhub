@@ -5,12 +5,16 @@
 //! 不会出现"CLI 能配 Web 不能配"的分叉。禁止写死任何 COM 号 —— 一切经参数。
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
-use crate::config::{parse_config_str, validate_baud, Flow, Parity, SerialConfig};
+use crate::config::{parse_config_str, validate_baud, Flow, Parity};
+#[cfg(test)]
+use crate::config::SerialConfig;
+#[cfg(test)]
 use crate::service::Startup;
 
 pub const USAGE: &str = "\
-SerialHub — 串口 <-> WebSocket 桥接 (内嵌 Web 控制台)
+SerialHub — 串口 <-> WebSocket 桥接管理器 (内嵌 Web 控制台)
 
 用法:
   serialhub [选项]
@@ -19,14 +23,20 @@ SerialHub — 串口 <-> WebSocket 桥接 (内嵌 Web 控制台)
   --port <名称>      串口名, 如 COM1 / /dev/ttyUSB0 (缺省 = 启动为未打开态, 由控制台驱动)
   --baud <数值>      波特率, 110..=2000000 (默认 115200)
   --config <8N2>     数据位/校验/停止位, 如 8N2、7E1、7O1 (默认 8N2)
-  --addr <ip:port>   HTTP/WS 监听地址 (默认 127.0.0.1:8080)
+  --addr <ip:port>   管理台 (控制面) 监听地址, 永远可达 (默认 127.0.0.1:8080)
   --list-ports       列出本机串口后退出
   --no-open          给了 --port 也不自动打开 (仍作为控制台的默认参数)
-  --max-clients <n>  最大 WS 客户端数, 0 = 不限 (默认 0; 超限新连接以 close 1013 拒绝, FR-9b)
+  --max-clients <n>  最大 WS 客户端数/每桥, 0 = 不限 (默认 0; 超限新连接以 close 1013 拒绝, FR-9b)
   --flow <模式>      流控: none / rtscts / xonxoff (默认 none; 与 /api/config 同一套校验, ADR-10)
+  --fleet <路径>     桥清单文件路径 (默认 %APPDATA%\\SerialHub\\fleet.json; FR-10b)
+  --no-fleet         关闭桥清单持久化 (FR-10b)
   --headless         纯 CLI 前台模式: 无窗口无托盘 (自动化测试与脚本场景, FR-8)
   --gui              原生窗口 + 托盘模式 (默认; 与 --headless 互斥)
   -h, --help         显示本帮助
+
+说明:
+  旧单桥参数 (--port/--baud/...) 等价于自动建一座桥并启动 (FR-10h);
+  每座桥的独立数据端口在管理台 (GET/POST /api/fleet) 里新建/启停/改配/删除。
 
 示例:
   serialhub --port COM1 --baud 115200 --config 8N2 --addr 127.0.0.1:8080
@@ -48,6 +58,10 @@ pub struct Cli {
     pub max_clients: u32,
     /// ADR-10: 流控 (CLI 与 /api/config 同一套校验)。
     pub flow: Flow,
+    /// FR-10b: 桥清单路径 (None = 用默认路径)。
+    pub fleet: Option<PathBuf>,
+    /// FR-10b: --no-fleet 关闭持久化。
+    pub no_fleet: bool,
 }
 
 impl Cli {
@@ -56,7 +70,9 @@ impl Cli {
         self.port.is_some() && !self.no_open
     }
 
-    /// 派生服务启动参数 (GUI / headless 共用, FR-8)。
+    /// 派生 legacy 单桥服务参数 (Sprint 4 起仅测试使用; 生产路径走
+    /// fleet::ManagerStartup::from_cli, FR-10h)。
+    #[cfg(test)]
     pub fn startup(&self) -> Startup {
         Startup {
             cfg: SerialConfig {
@@ -88,6 +104,8 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
     let mut gui_flag = false;
     let mut max_clients: u32 = 0;
     let mut flow = Flow::None;
+    let mut fleet: Option<PathBuf> = None;
+    let mut no_fleet = false;
 
     let mut i = 0usize;
     while i < args.len() {
@@ -136,6 +154,15 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
                 let v = val!();
                 flow = Flow::parse(&v).map_err(|e| format!("--flow {e}"))?;
             }
+            "--fleet" => {
+                let v = val!();
+                let t = v.trim().to_string();
+                if t.is_empty() {
+                    return Err("--fleet 不能为空字符串".into());
+                }
+                fleet = Some(PathBuf::from(t));
+            }
+            "--no-fleet" => no_fleet = true,
             "--headless" => headless = true,
             "--gui" => gui_flag = true,
             other => return Err(format!("未知参数 \"{other}\"")),
@@ -162,6 +189,8 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
         gui: !headless,
         max_clients,
         flow,
+        fleet,
+        no_fleet,
     })
 }
 
@@ -257,5 +286,24 @@ mod tests {
     fn addr_accepts_ipv6() {
         let c = parse_str("--addr [::1]:9000").unwrap();
         assert_eq!(c.addr.to_string(), "[::1]:9000");
+    }
+
+    #[test]
+    fn fleet_flags() {
+        // FR-10b: 默认持久化开 (路径留空 = 运行时取默认), --no-fleet 关闭
+        let c = parse(&[]).unwrap();
+        assert!(c.fleet.is_none());
+        assert!(!c.no_fleet);
+        let c = parse_str("--no-fleet").unwrap();
+        assert!(c.no_fleet);
+        let c = parse_str("--fleet %TEMP%\\a.json").unwrap();
+        assert_eq!(c.fleet.unwrap().to_string_lossy(), "%TEMP%\\a.json");
+        let c = parse_str("--fleet relative.json").unwrap();
+        assert_eq!(c.fleet.unwrap().to_string_lossy(), "relative.json");
+        assert!(parse_str("--fleet").is_err()); // 缺值
+        assert!(parse_str("--fleet  ").is_err()); // 空值
+        // --no-fleet 与 --fleet 可并存, --no-fleet 优先 (语义在 from_cli 里收敛)
+        let c = parse_str("--fleet a.json --no-fleet").unwrap();
+        assert!(c.no_fleet);
     }
 }

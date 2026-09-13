@@ -2,16 +2,19 @@
 //!
 //! - GUI (默认): gui::run_gui —— 主线程 tao 事件循环 + wry WebView + 托盘,
 //!   tokio 服务在后台线程 (整合方式与坑见 gui.rs 模块头注释);
-//! - --headless: 旧行为, 纯 CLI 前台 (自动化测试与脚本场景, PLAT-4 无 GUI 依赖);
-//! - 字节通路与并发模型见 serial.rs / supervisor.rs 顶部注释。
+//! - --headless: 纯 CLI 前台 (自动化测试与脚本场景, PLAT-4 无 GUI 依赖);
+//! - Sprint 4 (FR-10/ADR-13): 两种形态都走 fleet::run_manager 多桥管理器;
+//!   字节通路与并发模型见 serial.rs / supervisor.rs 顶部注释。
 
 mod api;
 mod cli;
 mod config;
+mod fleet;
 mod gui;
 mod hub;
 mod serial;
 mod service;
+mod stats;
 mod supervisor;
 
 use cli::Cli;
@@ -56,7 +59,7 @@ fn main() {
         unreachable!("tao 事件循环不返回");
     }
 
-    // headless 模式: 旧行为 —— 进程内 tokio 主任务 + Ctrl-C 优雅停机
+    // headless 模式: 进程内 tokio 主任务 + Ctrl-C 优雅停机
     if let Err(e) = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -69,9 +72,9 @@ fn main() {
 }
 
 async fn headless_service(cli: Cli) -> Result<(), String> {
-    let startup = cli.startup();
+    let startup = fleet::ManagerStartup::from_cli(&cli);
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HubCmd>();
     let (shutdown_tx, _) = tokio::sync::watch::channel(false);
-    // 端口被占用时 run_service 在 bind 处先失败, auto_open 指令不会发出 (不开串口直接退出)
-    service::run_service(startup, cmd_tx, cmd_rx, shutdown_tx, None).await
+    // 控制面 (管理台) bind 失败时 run_manager 先失败, 兼容桥不会创建 (不开串口直接退出)
+    fleet::run_manager(startup, cmd_tx, cmd_rx, shutdown_tx, None).await
 }

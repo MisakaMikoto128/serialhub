@@ -3,11 +3,13 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>SerialHub 串口桥接控制台</title>
+<title>SerialHub — 串口桥接管理器</title>
 <style>
 /* ============================================================
    设计令牌 (UI-2): 全部集中在 :root, 深色模式 (P2) 只扩展此处。
    浅色工业风: 高对比面板 + 等宽数字 + 直角偏硬的边框语言。
+   Sprint4 (ADR-13): 单桥控制台 → 多桥管理台。
+   主屏 = 桥列表仪表盘; 终端降级为每桥「侦听」抽屉 (FR-10e)。
    ============================================================ */
 :root{
   --bg:#eef1f4;          /* 页面底 */
@@ -25,7 +27,8 @@
   --warn:#c07800;  --warn-bg:#fdf3dd;  --warn-ink:#8a5100;
   --err:#bb3a30;   --err-bg:#fae9e7;   --err-ink:#93251d;
   --gray:#7c8791;  --gray-bg:#e9edf1;  --gray-ink:#4c5761;
-  --tx:#0b6aa8;                          /* 终端里发送方向的颜色 */
+  --tx:#0b6aa8;                          /* 网页→串口 方向色 (沿用旧终端发送色) */
+  --rx:#1e8e4e;                          /* 串口→网页 方向色 */
   --term-bg:#fbfcfd; --term-border:#e2e7ec;
   --radius:6px;
   --gap:10px; --pad:12px;
@@ -38,8 +41,10 @@ body{background:var(--bg);color:var(--ink);font:14px/1.5 var(--sans);overflow-x:
 button{font:inherit;cursor:pointer}
 button:disabled{cursor:not-allowed;opacity:.45}
 input,select{font:inherit;color:var(--ink)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .invalid{border-color:var(--err)!important;background:var(--err-bg)!important}
 
+/* ============ 顶栏 ============ */
 header{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 16px;
   background:var(--panel);border-bottom:2px solid var(--border-strong)}
 header h1{font-size:16px;margin:0;letter-spacing:.5px}
@@ -47,44 +52,86 @@ header .sub{color:var(--muted);font-size:12px;font-weight:400;margin-left:4px}
 header .spacer{flex:1}
 .brand-mark{display:inline-block;width:10px;height:10px;background:var(--accent);
   margin-right:8px;border-radius:2px;vertical-align:baseline}
+/* 控制台网址块: 管理台地址固定, 只展示+复制; 程序请连各桥自己的网址 */
+.urlchip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);
+  background:var(--panel-2);border-radius:4px;padding:3px 6px 3px 10px;font-size:12px;color:var(--muted);
+  max-width:100%}
+.urlchip code{font-family:var(--mono);font-size:12px;color:var(--ink);word-break:break-all}
+.quit-btn{border-color:var(--err);color:var(--err);font-size:12px;padding:3px 10px;border-radius:4px;background:var(--panel)}
+.quit-btn:hover:not(:disabled){background:var(--err-bg);border-color:var(--err);color:var(--err-ink)}
+.quit-btn.armed{background:var(--err);border-color:var(--err);color:#fff}
+.quit-btn:disabled{opacity:.6}
+
+/* ============ 通知条 (操作结果/连接状态) ============ */
+#noticeBar{display:none;max-width:1200px;margin:10px auto -2px;padding:8px 12px;
+  border-radius:4px;font-size:13px;word-break:break-all}
+#noticeBar.show{display:block}
+#noticeBar.err{background:var(--err-bg);color:var(--err-ink);border:1px solid var(--err)}
+#noticeBar.ok{background:var(--ok-bg);color:var(--ok-ink);border:1px solid var(--ok)}
+
+/* ============ 主区: 桥列表 ============ */
+main{max-width:1200px;margin:0 auto;padding:var(--gap)}
+.toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:var(--gap)}
+.toolbar .count{font-size:12px;color:var(--faint)}
+#bridgeList{display:flex;flex-direction:column;gap:var(--gap)}
+
+.bcard{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+  padding:var(--pad);display:flex;flex-direction:column;gap:10px}
+.bcard:hover{border-color:var(--border-strong)}
+.brow1{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.brow1 .grow{flex:1}
+.bname{background:none;border:none;padding:0;font-size:15px;font-weight:600;color:var(--ink);
+  text-align:left;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bname:hover{color:var(--accent);text-decoration:underline}
 
 /* 状态徽章 (UI-3): open=绿 / opening=绿闪 / retry=琥珀 / closed=灰 */
 .badge{display:inline-flex;align-items:center;gap:6px;padding:2px 10px;border-radius:999px;
   font-size:12px;border:1px solid currentColor;white-space:nowrap}
 .badge .dot{width:8px;height:8px;border-radius:50%;background:currentColor;flex:none}
-.quit-btn{border-color:var(--err);color:var(--err);font-size:12px;padding:3px 10px;border-radius:4px;background:var(--panel)}
-.quit-btn:hover:not(:disabled){background:var(--err-bg);border-color:var(--err);color:var(--err-ink)}
-.quit-btn.armed{background:var(--err);border-color:var(--err);color:#fff}
-.quit-btn:disabled{opacity:.6}
-.equiv{margin-top:12px;border:1px solid var(--border);border-radius:4px;background:var(--panel-2);padding:6px 8px}
-.equiv-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
-.equiv-head .k{font-size:11px;color:var(--faint);letter-spacing:1px}
-.copy-btn{font-size:11px;padding:2px 8px}
-#equivCmd{display:block;font-family:var(--mono);font-size:12px;word-break:break-all;color:var(--ink)}
 .b-open{background:var(--ok-bg);color:var(--ok-ink)}
 .b-opening{background:var(--ok-bg);color:var(--ok-ink);animation:blink 1s steps(2,start) infinite}
 .b-retry{background:var(--warn-bg);color:var(--warn-ink)}
 .b-closed{background:var(--gray-bg);color:var(--gray-ink)}
 @keyframes blink{50%{opacity:.35}}
 
-main{display:grid;grid-template-columns:340px minmax(0,1fr);gap:var(--gap);
-  padding:var(--gap);max-width:1440px;margin:0 auto}
-.col{display:flex;flex-direction:column;gap:var(--gap);min-width:0}
-.panel{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius)}
-.panel>h2{font-size:12px;margin:0;padding:7px var(--pad);border-bottom:1px solid var(--border);
-  color:var(--muted);letter-spacing:2px;font-weight:600;display:flex;align-items:center;gap:8px}
-.panel .body{padding:var(--pad)}
+/* 流程图: 串口 ⇄ 桥 ⇄ 网址; 有流量时对应线段点亮并流动 */
+.flow{display:flex;align-items:center;gap:6px}
+.node{border:1px solid var(--border-strong);border-radius:4px;background:var(--panel-2);
+  padding:4px 10px;text-align:center;min-width:0;flex:0 1 auto}
+.node .cap{display:block;font-size:10px;color:var(--faint);letter-spacing:1px;line-height:1.3}
+.node b{font-family:var(--mono);font-size:13px;font-weight:600;display:block;
+  max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.node .nwrap{display:flex;align-items:center;gap:4px;justify-content:center;min-width:0}
+.node.bridge{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);flex:0 0 auto}
+.node.bridge .cap{color:rgba(255,255,255,.75)}
+.wire{flex:none;width:44px;height:26px}
+.wire line{stroke:var(--border-strong);stroke-width:2;stroke-dasharray:5 4;transition:stroke .2s}
+.wire line.on-rx{stroke:var(--rx);animation:dashR .5s linear infinite}
+.wire line.on-tx{stroke:var(--tx);animation:dashL .5s linear infinite}
+@keyframes dashR{to{stroke-dashoffset:-9}}
+@keyframes dashL{to{stroke-dashoffset:9}}
+.mini-copy{font-size:11px;padding:1px 6px;border-radius:3px;flex:none}
 
-/* 连接面板表单 */
-.field{display:flex;align-items:center;gap:8px;margin-bottom:8px}
-.field>label{width:64px;flex:none;color:var(--muted);font-size:12px;white-space:nowrap}
-.field .ctl button{white-space:nowrap}
-#inAddr{flex:1;min-width:120px}
-.field .ctl{flex:1;display:flex;gap:6px;min-width:0}
-select,input[type=number],input[type=text]{background:var(--panel-2);border:1px solid var(--border-strong);
-  border-radius:4px;padding:5px 8px;min-width:0}
-input[type=number]{width:100%}
-select{flex:1}
+/* 速率行: 数字 + 最近 60s 火花线 */
+.rates{display:flex;align-items:center;gap:6px 16px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+.rgrp{display:inline-flex;align-items:center;gap:6px;min-width:0}
+.rlab{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.rdot{width:8px;height:8px;border-radius:2px;background:var(--rx);flex:none}
+.rdot.t{background:var(--tx)}
+.rgrp>b{font-family:var(--mono);font-size:13px;color:var(--ink);min-width:72px;text-align:right;white-space:nowrap}
+.spark{flex:none}
+.mini{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
+.mini b{font-family:var(--mono);font-size:13px;color:var(--ink);font-weight:600}
+.berr{margin-top:0;font-size:12px;color:var(--err-ink);background:var(--err-bg);
+  border:1px solid var(--err);border-radius:4px;padding:6px 8px;word-break:break-all;display:none}
+.berr.show{display:block}
+
+/* 空状态 */
+.emptybox{border:1px dashed var(--border-strong);border-radius:var(--radius);
+  padding:40px 20px;text-align:center;color:var(--muted)}
+.emptybox p{margin:0 0 12px}
+
+/* ============ 通用表单件 ============ */
 button{background:var(--panel-2);border:1px solid var(--border-strong);border-radius:4px;
   padding:5px 12px;color:var(--ink)}
 button:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
@@ -92,209 +139,417 @@ button.primary{background:var(--accent);border-color:var(--accent);color:var(--a
 button.primary:hover:not(:disabled){background:var(--accent-hover);color:var(--accent-ink)}
 button.danger{border-color:var(--err);color:var(--err)}
 button.danger:hover:not(:disabled){background:var(--err-bg)}
-.param-row{display:flex;gap:6px}
+button.danger.armed{background:var(--err);border-color:var(--err);color:#fff}
+.copy-btn{font-size:11px;padding:2px 8px}
+.field{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.field>label{width:72px;flex:none;color:var(--muted);font-size:12px;white-space:nowrap}
+.field .ctl{flex:1;display:flex;gap:6px;min-width:0}
+.field .ctl button{white-space:nowrap}
+.field .ctl select{flex:1}
+.field .ctl input[type=text]{flex:1}
+.field code{font-family:var(--mono);font-size:12px;word-break:break-all;min-width:0}
+select,input[type=number],input[type=text]{background:var(--panel-2);border:1px solid var(--border-strong);
+  border-radius:4px;padding:5px 8px;min-width:0}
+input[type=number]{width:100%}
+.param-row{display:flex;gap:6px;margin-bottom:8px}
 .param-row .p{flex:1;min-width:0}
 .param-row .p label{display:block;font-size:11px;color:var(--faint);margin-bottom:2px}
 .param-row .p select{width:100%}
+.send-hint{margin-top:6px;font-size:12px;color:var(--faint)}
+.send-hint.err{color:var(--err)}
+.form-err{display:none;font-size:12px;color:var(--err-ink);background:var(--err-bg);
+  border:1px solid var(--err);border-radius:4px;padding:6px 8px;margin:8px 0;word-break:break-all}
+.form-err.show{display:block}
+.ferr{display:block;margin:-4px 0 8px 80px;font-size:12px;color:var(--err-ink);
+  background:var(--err-bg);border:1px solid var(--err);border-radius:4px;
+  padding:4px 8px;word-break:break-all}
+.ferr[hidden]{display:none}
+.lock-hint{display:none;font-size:12px;color:var(--warn-ink);background:var(--warn-bg);
+  border:1px solid var(--warn);border-radius:4px;padding:6px 8px;margin:8px 0}
+.lock-hint.show{display:block}
 
-.actions{display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap}
-.actions .grow{flex:1}
+/* 等价命令块 */
+.equiv{margin-top:12px;border:1px solid var(--border);border-radius:4px;background:var(--panel-2);padding:6px 8px}
+.equiv summary{cursor:pointer;letter-spacing:1px;font-size:11px;color:var(--faint)}
+.equiv summary:hover{color:var(--accent)}
+.equiv code{display:block;font-family:var(--mono);font-size:12px;word-break:break-all;color:var(--ink)}
 
-/* 计数卡 (FIX-5): 固定 2×2, 数值列不省略号, 长数字完整可见 */
-.stats{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;margin-top:12px}
+/* 统计卡 */
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:12px}
 .stat{background:var(--panel-2);border:1px solid var(--border);border-radius:4px;padding:6px 8px;min-width:0}
-.stat .k{font-size:11px;color:var(--faint);letter-spacing:1px}
+.stat .k{font-size:11px;color:var(--faint);letter-spacing:1px;white-space:nowrap}
 .stat .v{font-family:var(--mono);font-size:14px;white-space:nowrap}
-.error-line{margin-top:10px;font-size:12px;color:var(--err-ink);background:var(--err-bg);
-  border:1px solid var(--err);border-radius:4px;padding:6px 8px;word-break:break-all;display:none}
-.error-line.show{display:block}
+.sparkrow{display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap}
+.sparkrow .rlab{font-size:12px;color:var(--muted)}
+.kv{font-size:12px;color:var(--muted);margin-top:8px;word-break:break-all}
+.kv b{color:var(--ink);font-family:var(--mono);font-weight:600}
 
-/* 终端 */
+/* ============ 侦听终端 (每桥抽屉内) ============ */
 .term-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
-  padding:8px var(--pad);border-bottom:1px solid var(--border);background:var(--panel-2)}
+  padding:8px 0;border-bottom:1px solid var(--border)}
 .seg{display:inline-flex;border:1px solid var(--border-strong);border-radius:4px;overflow:hidden}
 .seg button{border:none;border-radius:0;padding:4px 12px;background:var(--panel);color:var(--muted)}
 .seg button.active{background:var(--accent);color:var(--accent-ink)}
 .term-toolbar .spacer{flex:1}
 .term-toolbar .count{font-family:var(--mono);font-size:12px;color:var(--faint)}
-#term{height:46vh;min-height:280px;overflow-y:auto;background:var(--term-bg);
-  border-radius:0 0 var(--radius) var(--radius);padding:8px 10px;
-  font-family:var(--mono);font-size:13px;line-height:1.45}
+#term{height:44vh;min-height:240px;overflow-y:auto;background:var(--term-bg);
+  border:1px solid var(--term-border);border-top:none;border-radius:0 0 var(--radius) var(--radius);
+  padding:8px 10px;font-family:var(--mono);font-size:13px;line-height:1.45}
 #term .ln{white-space:pre-wrap;word-break:break-all}
-#term .ln.tx{color:var(--tx)}
-#term .ts{color:var(--faint)}                       /* FIX-6 时间戳 */
-#term .hexrow{white-space:pre;word-break:normal}    /* FIX-2 十六字节/行, 只在字节边界折行 */
+#term .ts{color:var(--faint)}
+#term .hexrow{white-space:pre;word-break:normal}
 #term .empty{color:var(--faint)}
 
-/* 发送区 */
-.send-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.send-row input[type=text]{flex:1;min-width:160px;font-family:var(--mono);
-  background:var(--panel-2);border:1px solid var(--border-strong);border-radius:4px;padding:6px 10px}
-.send-row input[type=text]:disabled{background:var(--panel-2)}
-.send-mode{display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap}
-.send-mode label{font-size:12px;color:var(--muted);display:inline-flex;align-items:center;gap:4px}
-.send-hint{margin-top:6px;font-size:12px;color:var(--faint)}
-.send-hint.err{color:var(--err)}
+/* ============ 新建桥弹窗 ============ */
+dialog{border:1px solid var(--border-strong);border-radius:8px;box-shadow:0 10px 40px rgba(0,0,0,.18);
+  padding:0;width:min(460px,94vw);background:var(--panel);color:var(--ink)}
+dialog::backdrop{background:rgba(28,38,48,.4)}
+.dlg-head{display:flex;align-items:center;justify-content:space-between;
+  padding:12px 16px;border-bottom:1px solid var(--border)}
+.dlg-head h2{font-size:14px;margin:0;letter-spacing:1px;color:var(--muted)}
+.dlg-body{padding:12px 16px 16px}
+.dlg-foot{display:flex;align-items:center;gap:8px;justify-content:flex-end;
+  padding:0 16px 14px}
+.dlg-foot .grow{flex:1}
+.dlg-foot .hint{font-size:12px;color:var(--faint)}
+.x-btn{border:none;background:none;font-size:16px;color:var(--muted);padding:2px 6px}
+.x-btn:hover{color:var(--err)}
 
-footer{max-width:1440px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--faint);font-size:12px}
+/* ============ 每桥抽屉 ============ */
+#mask{position:fixed;inset:0;background:rgba(28,38,48,.35);z-index:40}
+#drawer{position:fixed;top:0;right:0;bottom:0;width:500px;max-width:100vw;
+  background:var(--panel);border-left:2px solid var(--border-strong);z-index:50;
+  display:flex;flex-direction:column;box-shadow:-6px 0 24px rgba(0,0,0,.12)}
+#drawer[hidden],#mask[hidden]{display:none}
+.dr-head{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border)}
+.dr-head h2{font-size:15px;margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.dr-dataurl{display:flex;align-items:center;gap:8px;padding:6px 14px;border-bottom:1px solid var(--border);
+  background:var(--panel-2);font-size:12px;color:var(--muted);flex-wrap:wrap}
+.dr-dataurl code{font-family:var(--mono);font-size:12px;color:var(--ink);word-break:break-all}
+.dr-tabs{display:flex;border-bottom:1px solid var(--border)}
+.dr-tabs button{flex:1;border:none;border-radius:0;background:var(--panel-2);padding:9px 4px;
+  color:var(--muted);border-bottom:2px solid transparent}
+.dr-tabs button:hover{color:var(--accent)}
+.dr-tabs button[aria-selected="true"]{background:var(--panel);color:var(--accent);
+  border-bottom-color:var(--accent);font-weight:600}
+.dr-body{flex:1;overflow-y:auto;padding:var(--pad)}
+.dr-sec>h3{font-size:12px;margin:0 0 10px;padding:0;color:var(--muted);letter-spacing:2px;font-weight:600}
 
-/* 720px 窄屏 (UI-1): 单列堆叠, 无横向滚动 */
+footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--faint);font-size:12px}
+
+/* 720px 窄屏 (UI-1): 无横向滚动 */
 @media (max-width:900px){
-  main{grid-template-columns:1fr}
-  #term{height:40vh}
+  .stats{grid-template-columns:repeat(2,1fr)}
+  #term{height:38vh}
 }
 @media (max-width:720px){
   header{padding:8px 12px}
-  .field>label{width:56px}
+  .field>label{width:60px}
+  .ferr{margin-left:68px}
+  #drawer{width:100vw}
+  .node b{max-width:96px}
+  .wire{width:30px}
+  .bcard{padding:10px}
+  .rgrp .spark{width:80px}
 }
 </style>
 </head>
 <body>
 <header>
-  <h1><span class="brand-mark"></span>SerialHub<span class="sub">串口 &harr; WebSocket 桥接控制台</span></h1>
+  <h1><span class="brand-mark"></span>SerialHub<span class="sub">串口桥接管理器 · 让网页连上串口</span></h1>
   <span class="spacer"></span>
-  <span id="wsBadge" class="badge b-closed"><span class="dot"></span><span id="wsBadgeText">WS 未连接</span></span>
-  <button id="btnQuit" type="button" class="quit-btn" title="优雅停止 SerialHub 服务并退出程序 (含托盘/串口清理)">退出程序</button>
+  <span class="urlchip" title="管理台网址固定不变; 程序请连各桥自己的网址">
+    <span>控制台网址</span><code id="consoleUrl">…</code>
+    <button id="btnCopyUrl" type="button" class="copy-btn" title="复制控制台网址">复制</button>
+  </span>
+  <button id="btnQuit" type="button" class="quit-btn" title="关闭 SerialHub: 所有桥会停止, 已连的网页会断开">退出程序</button>
 </header>
 
+<div id="noticeBar" role="alert"></div>
+
 <main>
-  <!-- ============ 左列: 连接面板 ============ -->
-  <div class="col">
-    <section class="panel">
-      <h2>连 接</h2>
-      <div class="body">
-        <div class="field">
-          <label for="inAddr">地址</label>
-          <div class="ctl">
-            <input id="inAddr" type="text" placeholder="127.0.0.1:8080" title="HTTP/WS 监听地址 (FR-9a)" />
-            <button id="btnRestart" type="button" title="桥切换到新监听地址; 串口会话与终端历史保留, 现有连接需重连新地址 (ADR-12)">应用地址</button>
-          </div>
-        </div>
-        <div class="send-hint" id="restartHint"></div>
-        <div class="field">
-          <label for="selPort">串口</label>
-          <div class="ctl">
-            <select id="selPort" title="选择串口"><option value="">(点击"扫描")</option></select>
-            <button id="btnScan" type="button" title="扫描本机串口">扫描</button>
-          </div>
-        </div>
-        <div class="field">
-          <label for="inBaud">波特率</label>
-          <div class="ctl"><input id="inBaud" type="number" min="110" max="2000000" step="1" value="115200"
-            list="baudList" title="110 ~ 2000000" /></div>
-          <datalist id="baudList">
-            <option value="9600"></option><option value="19200"></option><option value="38400"></option>
-            <option value="57600"></option><option value="115200"></option><option value="230400"></option>
-            <option value="460800"></option><option value="921600"></option><option value="1000000"></option>
-            <option value="2000000"></option>
-          </datalist>
-        </div>
-        <div class="field">
-          <label for="inMaxClients">客户端上限</label>
-          <div class="ctl"><input id="inMaxClients" type="number" min="0" step="1" value="0"
-            title="0 = 不限; 超限的新连接以 close 1013 拒绝 (FR-9b)" /></div>
-        </div>
-        <fieldset id="cfgParams" style="border:none;margin:0;padding:0">
-          <div class="param-row">
-            <div class="p"><label for="selData">数据位</label>
-              <select id="selData"><option value="8" selected>8</option><option value="7">7</option></select></div>
-            <div class="p"><label for="selParity">校验</label>
-              <select id="selParity"><option value="N" selected>N 无</option><option value="E">E 偶</option><option value="O">O 奇</option></select></div>
-            <div class="p"><label for="selStop">停止位</label>
-              <select id="selStop"><option value="2" selected>2</option><option value="1">1</option></select></div>
-            <div class="p"><label for="selFlow">流控</label>
-              <select id="selFlow"><option value="none" selected>无</option><option value="rtscts">RTS/CTS</option><option value="xonxoff">XON/XOFF</option></select></div>
-          </div>
-        </fieldset>
-        <div class="actions">
-          <button id="btnOpen" type="button" class="primary" title="按当前参数打开串口">打 开</button>
-          <button id="btnClose" type="button" class="danger" disabled title="关闭串口">关 闭</button>
-          <span class="grow"></span>
-          <span id="phaseBadge" class="badge b-closed"><span class="dot"></span><span id="phaseText">已关闭</span></span>
-        </div>
-        <div class="stats">
-          <div class="stat"><div class="k">RX 字节</div><div class="v" id="stRx">0</div></div>
-          <div class="stat"><div class="k">TX 字节</div><div class="v" id="stTx">0</div></div>
-          <div class="stat"><div class="k">客户端</div><div class="v" id="stClients">0</div></div>
-          <div class="stat"><div class="k">运行</div><div class="v" id="stUptime">0:00:00</div></div>
-        </div>
-        <div id="errorLine" class="error-line" title="最近一次错误 (lastError / 本地校验错误)"></div>
-        <div class="equiv">
-          <div class="equiv-head"><span class="k">等 价 CLI 命 令 (FR-9c)</span>
-            <button id="btnCopyCmd" type="button" class="copy-btn" title="复制等价命令到剪贴板">📋 复制</button></div>
-          <code id="equivCmd"></code>
-          <div class="send-hint" id="equivHint">与当前控制台配置完全等价; headless (无窗口) 场景请追加 --headless</div>
-        </div>
-      </div>
-    </section>
+  <div class="toolbar">
+    <button id="btnNew" type="button" class="primary" title="新建一座桥, 让一个串口设备连上网页">＋ 新建桥</button>
+    <span class="count">我的桥 (<b id="fleetCount">0</b>)</span>
   </div>
 
-  <!-- ============ 右列: 终端 + 发送 ============ -->
-  <div class="col">
-    <section class="panel">
-      <h2>终 端</h2>
+  <div id="bridgeList"></div>
+  <div id="emptyBox" class="emptybox" hidden>
+    <p>还没有桥。<br>一座桥 = 一个串口 + 一个网址: 网页打开这个网址, 就能用到这个串口。</p>
+    <button id="btnNew2" type="button" class="primary">＋ 新建第一座桥</button>
+  </div>
+</main>
+
+<footer>SerialHub &middot; 串口桥接管理器 &middot; 桥的配置自动保存, 关掉再打开会原样恢复 &middot; 没有密码保护, 请只在自家电脑或内网使用</footer>
+
+<!-- ============ 新建桥弹窗 ============ -->
+<dialog id="dlgNew" aria-labelledby="dlgTitle">
+  <div class="dlg-head"><h2 id="dlgTitle">新 建 一 座 桥</h2>
+    <button type="button" class="x-btn" id="btnDlgX" title="关闭" aria-label="关闭新建桥窗口">✕</button></div>
+  <div class="dlg-body">
+    <div class="field">
+      <label for="npName">名称</label>
+      <div class="ctl"><input id="npName" type="text" placeholder="如: 一号设备" maxlength="40" /></div>
+    </div>
+    <div class="ferr" id="npErrName" hidden></div>
+    <div class="field">
+      <label for="npPort">串口</label>
+      <div class="ctl">
+        <select id="npPort" title="选择串口"><option value="">点「扫描」找串口</option></select>
+        <button id="btnNpScan" type="button" title="重新扫描本机串口">扫描</button>
+      </div>
+    </div>
+    <div class="ferr" id="npErrPort" hidden></div>
+    <div class="field">
+      <label for="npBaud">波特率</label>
+      <div class="ctl"><input id="npBaud" type="number" min="110" max="2000000" step="1" value="115200"
+        list="baudList" title="常用 9600 / 115200; 允许 110 ~ 2000000" /></div>
+    </div>
+    <div class="ferr" id="npErrBaud" hidden></div>
+    <div class="param-row">
+      <div class="p"><label for="npData">数据位</label>
+        <select id="npData"><option value="8" selected>8</option><option value="7">7</option></select></div>
+      <div class="p"><label for="npParity">校验</label>
+        <select id="npParity"><option value="N" selected>N 无</option><option value="E">E 偶</option><option value="O">O 奇</option></select></div>
+      <div class="p"><label for="npStop">停止位</label>
+        <select id="npStop"><option value="2" selected>2</option><option value="1">1</option></select></div>
+      <div class="p"><label for="npFlow">流控</label>
+        <select id="npFlow"><option value="none" selected>无</option><option value="rtscts">RTS/CTS</option><option value="xonxoff">XON/XOFF</option></select></div>
+    </div>
+    <div class="field">
+      <label for="npListen">网址端口</label>
+      <div class="ctl"><input id="npListen" type="text" placeholder="127.0.0.1:9001"
+        title="数据网址: 网页/程序连这座桥用 (本机, 形如 127.0.0.1:9001)" /></div>
+    </div>
+    <div class="ferr" id="npErrListen" hidden></div>
+    <div class="send-hint">创建后这座桥立刻开始连接串口。</div>
+    <div id="npErr" class="form-err"></div>
+  </div>
+  <div class="dlg-foot">
+    <span class="hint"></span><span class="grow"></span>
+    <button id="btnCancelNew" type="button">取消</button>
+    <button id="btnCreate" type="button" class="primary">创建并启动</button>
+  </div>
+</dialog>
+
+<datalist id="baudList">
+  <option value="9600"></option><option value="19200"></option><option value="38400"></option>
+  <option value="57600"></option><option value="115200"></option><option value="230400"></option>
+  <option value="460800"></option><option value="921600"></option><option value="1000000"></option>
+  <option value="2000000"></option>
+</datalist>
+
+<!-- ============ 每桥卡片模板 ============ -->
+<template id="tplCard">
+  <article class="bcard">
+    <div class="brow1">
+      <button type="button" class="bname" title="打开这座桥的管理抽屉"></button>
+      <span class="badge b-closed"><span class="dot"></span><span class="bphase">已停止</span></span>
+      <span class="grow"></span>
+      <button type="button" class="act-toggle" title="启动/停止这座桥"></button>
+      <button type="button" class="act-cfg" title="打开这座桥的管理抽屉">设置</button>
+      <button type="button" class="act-del danger" title="删除这座桥">删除</button>
+    </div>
+    <div class="flow">
+      <div class="node serial" title="这座桥接的串口设备"><span class="cap">串口</span><b class="n-serial"></b></div>
+      <svg class="wire" viewBox="0 0 44 26" width="44" height="26" aria-hidden="true">
+        <line class="wrx" x1="2" y1="8" x2="42" y2="8"/><line class="wtx" x1="2" y1="18" x2="42" y2="18"/>
+      </svg>
+      <div class="node bridge" title="桥: 串口与网址之间的通道"><span class="cap">桥</span><b class="n-name"></b></div>
+      <svg class="wire" viewBox="0 0 44 26" width="44" height="26" aria-hidden="true">
+        <line class="wrx" x1="2" y1="8" x2="42" y2="8"/><line class="wtx" x1="2" y1="18" x2="42" y2="18"/>
+      </svg>
+      <div class="node net" title="数据网址: 网页/程序连接这座桥用"><span class="cap">网址</span>
+        <span class="nwrap"><b class="n-listen"></b><button type="button" class="mini-copy" title="复制数据网址给网页/程序">复制</button></span></div>
+    </div>
+    <div class="rates">
+      <span class="rgrp"><span class="rlab"><span class="rdot"></span>收 · 串口→网页</span>
+        <svg class="spark spark-rx" width="110" height="26" viewBox="0 0 110 26" aria-hidden="true"></svg>
+        <b class="v-rx">0 B/s</b></span>
+      <span class="rgrp"><span class="rlab"><span class="rdot t"></span>发 · 网页→串口</span>
+        <svg class="spark spark-tx" width="110" height="26" viewBox="0 0 110 26" aria-hidden="true"></svg>
+        <b class="v-tx">0 B/s</b></span>
+      <span class="mini">连接 <b class="v-clients">0</b></span>
+      <span class="mini">运行 <b class="v-up">0:00:00</b></span>
+    </div>
+    <div class="berr"></div>
+  </article>
+</template>
+
+<!-- ============ 每桥抽屉 (设置 / 侦听 / 统计) ============ -->
+<div id="mask" hidden></div>
+<aside id="drawer" hidden role="dialog" aria-modal="true" aria-labelledby="drTitle">
+  <div class="dr-head">
+    <h2 id="drTitle">桥</h2>
+    <span id="drBadge" class="badge b-closed"><span class="dot"></span><span id="drPhase">已停止</span></span>
+    <button id="drClose" type="button" title="关闭抽屉 (Esc)">✕ 关闭</button>
+  </div>
+  <div class="dr-dataurl">数据网址 <code id="drDataUrl">—</code>
+    <button id="btnDrCopyUrl" type="button" class="copy-btn" title="复制数据网址给网页/程序">复制</button>
+  </div>
+  <div class="dr-tabs" role="tablist" aria-label="桥管理">
+    <button id="tb-cfg" type="button" role="tab" aria-selected="true" aria-controls="pan-cfg">设置</button>
+    <button id="tb-tap" type="button" role="tab" aria-selected="false" aria-controls="pan-tap">串口数据</button>
+    <button id="tb-stats" type="button" role="tab" aria-selected="false" aria-controls="pan-stats">统计</button>
+  </div>
+  <div class="dr-body">
+
+    <section id="pan-cfg" role="tabpanel" aria-labelledby="tb-cfg" class="dr-sec">
+      <h3>桥 的 设 置</h3>
+      <div class="field">
+        <label for="cfName">名称</label>
+        <div class="ctl"><input id="cfName" type="text" maxlength="40" /></div>
+      </div>
+      <div class="field">
+        <label for="cfPort">串口</label>
+        <div class="ctl">
+          <select id="cfPort" title="选择串口"><option value="">点「扫描」找串口</option></select>
+          <button id="btnCfScan" type="button" title="重新扫描本机串口">扫描</button>
+        </div>
+      </div>
+      <div class="field">
+        <label for="cfBaud">波特率</label>
+        <div class="ctl"><input id="cfBaud" type="number" min="110" max="2000000" step="1" value="115200"
+          list="baudList" title="常用 9600 / 115200; 允许 110 ~ 2000000" /></div>
+      </div>
+      <div class="param-row">
+        <div class="p"><label for="cfData">数据位</label>
+          <select id="cfData"><option value="8" selected>8</option><option value="7">7</option></select></div>
+        <div class="p"><label for="cfParity">校验</label>
+          <select id="cfParity"><option value="N" selected>N 无</option><option value="E">E 偶</option><option value="O">O 奇</option></select></div>
+        <div class="p"><label for="cfStop">停止位</label>
+          <select id="cfStop"><option value="2" selected>2</option><option value="1">1</option></select></div>
+        <div class="p"><label for="cfFlow">流控</label>
+          <select id="cfFlow"><option value="none" selected>无</option><option value="rtscts">RTS/CTS</option><option value="xonxoff">XON/XOFF</option></select></div>
+      </div>
+      <div class="field">
+        <label for="cfListen">网址端口</label>
+      <div class="ctl"><input id="cfListen" type="text" placeholder="127.0.0.1:9001"
+        title="数据网址: 网页/程序连这座桥用 (本机, 形如 127.0.0.1:9001)" /></div>
+      </div>
+      <div class="field">
+        <label for="cfMax">同时连接上限</label>
+        <div class="ctl"><input id="cfMax" type="number" min="0" step="1" value="0"
+          title="最多几个网页或程序同时连这座桥; 填 0 = 不限" /></div>
+      </div>
+      <div class="field">
+        <label>数据网址</label>
+        <div class="ctl"><code id="cfDataUrl"></code>
+          <button id="btnCfCopyUrl" type="button" class="copy-btn" title="复制数据网址给网页/程序">复制</button></div>
+      </div>
+      <div class="send-hint">网页/程序打开「数据网址」就能连到这个串口; 同一串口同时只归一座桥</div>
+      <div id="cfLockHint" class="lock-hint"></div>
+      <div id="cfErr" class="form-err"></div>
+      <details class="equiv">
+        <summary>命令行写法 (给脚本用)</summary>
+        <code id="cfEquiv"></code>
+        <div class="send-hint">在命令行里跑这条, 效果和这座桥完全一样; 不想弹窗口就加 --headless</div>
+      </details>
+      <div class="actions" style="margin-top:12px;display:flex;align-items:center;gap:8px">
+        <button id="btnCfCopyCmd" type="button" class="copy-btn" title="复制命令行写法">📋 复制</button>
+        <button id="btnCfSave" type="button" class="primary" title="保存这座桥的设置">保 存</button>
+      </div>
+    </section>
+
+    <section id="pan-tap" role="tabpanel" aria-labelledby="tb-tap" class="dr-sec" hidden>
+      <h3>串 口 数 据 (只看, 不发)</h3>
       <div class="term-toolbar">
         <span class="seg" role="group" aria-label="显示格式">
           <button id="viewAscii" type="button" class="active">ASCII</button>
           <button id="viewHex" type="button">HEX</button>
         </span>
-        <button id="btnPause" type="button" title="暂停/恢复自动滚动">暂停滚动</button>
-        <button id="btnTs" type="button" title="显示/隐藏行时间戳 (UI-4)">时间戳</button>
-        <button id="btnClear" type="button" title="清空终端">清空</button>
+        <button id="btnPause" type="button" title="数据太快时按一下, 看清了再继续">暂停滚动</button>
+        <button id="btnTs" type="button" title="显示/隐藏行时间戳">时间戳</button>
+        <button id="btnClear" type="button" title="清空当前显示">清空</button>
         <span class="spacer"></span>
+        <span id="tapBadge" class="badge b-closed"><span class="dot"></span><span id="tapBadgeText">未连接</span></span>
         <span class="count" id="lineCount">0 / 5000 行</span>
       </div>
-      <div id="term" aria-live="off"><div class="empty">— 尚无数据 —</div></div>
+      <div id="term" aria-live="off"><div class="empty">还没有数据 — 串口一有动静就会显示在这里</div></div>
+      <div class="send-hint" id="tapHint">这里只是旁看; 想发数据, 请用连在这座桥上的网页/程序。</div>
     </section>
 
-    <section class="panel">
-      <h2>发 送</h2>
-      <div class="body">
-        <div class="send-mode">
-          <span class="seg" role="group" aria-label="发送格式">
-            <button id="sendText" type="button" class="active">文本</button>
-            <button id="sendHex" type="button">HEX</button>
-          </span>
-          <label><input type="checkbox" id="ckNewline" /> 追加换行 \n</label>
-        </div>
-        <div class="send-row">
-          <input id="inSend" type="text" placeholder="输入内容, 回车发送 (HEX 模式如: AA BB 01)" disabled />
-          <button id="btnSend" type="button" class="primary" disabled>发 送</button>
-        </div>
-        <div class="send-hint" id="sendHint">串口未打开, 发送区禁用</div>
+    <section id="pan-stats" role="tabpanel" aria-labelledby="tb-stats" class="dr-sec" hidden>
+      <h3>统 计 详 情</h3>
+      <div class="stats">
+        <div class="stat"><div class="k">连接数</div><div class="v" id="stClients">0</div></div>
+        <div class="stat"><div class="k">运行时长</div><div class="v" id="stUptime">0:00:00</div></div>
+        <div class="stat"><div class="k">串口→网页 速率</div><div class="v" id="stRxRate">0 B/s</div></div>
+        <div class="stat"><div class="k">网页→串口 速率</div><div class="v" id="stTxRate">0 B/s</div></div>
+        <div class="stat"><div class="k">串口→网页 累计</div><div class="v" id="stRx">0</div></div>
+        <div class="stat"><div class="k">网页→串口 累计</div><div class="v" id="stTx">0</div></div>
       </div>
+      <div class="sparkrow"><span class="rlab"><span class="rdot"></span>收 · 串口→网页 · 最近 60 秒</span>
+        <svg id="sparkBigRx" width="300" height="40" viewBox="0 0 300 40" aria-hidden="true"></svg></div>
+      <div class="sparkrow"><span class="rlab"><span class="rdot t"></span>发 · 网页→串口 · 最近 60 秒</span>
+        <svg id="sparkBigTx" width="300" height="40" viewBox="0 0 300 40" aria-hidden="true"></svg></div>
+      <div class="kv" id="stParam"></div>
+      <div id="stErr" class="berr" style="margin-top:10px"></div>
     </section>
-  </div>
-</main>
 
-<footer>SerialHub &middot; 原始二进制 WS 管道 (/ws) &middot; 多客户端广播, TX 先到先发 &middot; 勿暴露到不可信网络</footer>
+  </div>
+</aside>
 
 <script>
 "use strict";
 /* ================= 基础工具 ================= */
 const $ = (id) => document.getElementById(id);
-const PHASE_TEXT = { open: "已打开", opening: "打开中", retry: "重试中", closed: "已关闭" };
+const PHASE_TEXT = { open: "运行中", opening: "连接中", retry: "重连中", closed: "已停止" };
+const PHASE_TIP = {
+  open: "串口连着, 数据正常走",
+  opening: "正在连接串口",
+  retry: "串口暂时不在 (拔了或被别的程序占用)。插回设备就会自动接上, 不用操作",
+  closed: "这座桥没在跑。点「启动」开始",
+};
 const PHASE_CLS  = { open: "b-open", opening: "b-opening", retry: "b-retry", closed: "b-closed" };
-const MAX_LINES = 5000;
+const FLOW_TEXT  = { none: "无", rtscts: "RTS/CTS", xonxoff: "XON/XOFF" };
+const MAX_LINES = 5000;          /* UI-4: 侦听内容上限, 防内存膨胀 */
 const BAUD_MIN = 110, BAUD_MAX = 2000000;
+const SPARK_CAP = 60;            /* 火花线保留最近 60 个采样 (每秒 1 个 = 60 秒) */
+const POLL_MS = 500;
 const encoder = new TextEncoder();
 
-let phase = "closed";
-let ws = null;
-let wsGen = 0; // FIX-11: WS 代次 (迟到事件守卫)
-let paused = false;
-let flowUserEdited = false; // FIX-17: 用户改过流控选择 → 服务端回显暂不覆盖
-let wsRejected = false;     // FIX-19: WS 被 1013 拒绝
-let quitBusy = false;       // FIX-20: 退出流程进行中 (防 applyStatus 重置按钮)
-let viewMode = "ascii";   // ascii | hex
-let sendMode = "text";    // text | hex
-let showTs = false;       // FIX-6 时间戳开关 (默认关 = UI-4 "可选")
-let entries = [];         // { bytes:Uint8Array(一行), tx:bool, ts:number }
-let statusInit = false;   // 首次状态回包后用服务端配置回填表单
-let stickyErr = null;     // FIX-3 客户端侧校验错误 {msg, until}, 优先于服务端 lastError 展示
-let sendErrUntil = 0;     // FIX-3 发送区错误保持窗口 (防 500ms 轮询覆盖)
+/* 桌面壳注入 window.__SERIALHUB_SHELL (gui.rs); 浏览器里没有 → 退出按钮置灰 */
+const IS_SHELL = (typeof window !== "undefined") && window.__SERIALHUB_SHELL === true;
+const CSS = getComputedStyle(document.documentElement);
+const C_RX = (CSS.getPropertyValue("--rx") || "#1e8e4e").trim();
+const C_TX = (CSS.getPropertyValue("--tx") || "#0b6aa8").trim();
 
-/* ================= 状态轮询 (控制面) ================= */
+let bridges = [];                /* 最近一次 /api/fleet 的桥列表 */
+const cards = new Map();         /* id → 卡片元素引用 */
+const hist  = new Map();         /* id → {rx:[],tx:[]} 速率历史 (火花线) */
+let lastSparkPush = 0;
+let connOk = true;
+let drawerId = null, lastFocus = null, activeTab = "cfg";
+let noticeTimer = null;
+
+function fmtBytes(n) { return Number(n || 0).toLocaleString("en-US"); }
+function fmtRate(n) {
+  n = Number(n) || 0;
+  if (n < 1024) return Math.round(n) + " B/s";
+  if (n < 1048576) return (n / 1024).toFixed(1) + " kB/s";
+  return (n / 1048576).toFixed(1) + " MB/s";
+}
+/* DEF-2 加固: 速率字段缺失 (契约回退) 时显示 — 而不是伪造 0, 让问题立刻可见 */
+function fmtRateField(v) { return (v === undefined || v === null) ? "—" : fmtRate(v); }
+function fmtUptime(s) {
+  s = Math.max(0, Math.floor(Number(s) || 0));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+  return h + ":" + String(m).padStart(2, "0") + ":" + String(ss).padStart(2, "0");
+}
+function fmtTs(ts) {
+  const d = new Date(ts);
+  const p = (n, w) => String(n).padStart(w || 2, "0");
+  return p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds()) + "." + p(d.getMilliseconds(), 3);
+}
+function setBadge(el, textEl, ph) {
+  el.classList.remove("b-open", "b-opening", "b-retry", "b-closed");
+  el.classList.add(PHASE_CLS[ph] || "b-closed");
+  if (textEl) textEl.textContent = PHASE_TEXT[ph] || ph;
+  el.title = PHASE_TIP[ph] || "";
+}
+
+/* ================= 控制面请求 ================= */
 async function api(path, body) {
   const opt = body === undefined
     ? { method: "GET", cache: "no-store" }
@@ -306,234 +561,527 @@ async function api(path, body) {
   return j;
 }
 
-function fmtBytes(n) { return n.toLocaleString("en-US"); }
-function fmtUptime(s) {
-  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
-  return h + ":" + String(m).padStart(2, "0") + ":" + String(ss).padStart(2, "0");
-}
-function fmtTs(ts) {
-  const d = new Date(ts);
-  const p = (n, w) => String(n).padStart(w || 2, "0");
-  return p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds()) + "." + p(d.getMilliseconds(), 3);
+function notice(msg, kind) {
+  const el = $("noticeBar");
+  el.textContent = msg;
+  el.className = "show " + (kind || "");
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => { el.className = ""; }, 6000);
 }
 
-function setBadge(el, textEl, ph) {
-  el.classList.remove("b-open", "b-opening", "b-retry", "b-closed");
-  el.classList.add(PHASE_CLS[ph] || "b-closed");
-  if (textEl) textEl.textContent = PHASE_TEXT[ph] || ph;
-}
-
-/* FIX-3: 错误横幅分两层 —— 客户端校验错误 (4s 内不被轮询覆盖) / 服务端 lastError */
-function showClientError(msg) {
-  stickyErr = { msg, until: Date.now() + 8000 };
-  renderError(null);
-}
-function renderError(s) {
-  const el = $("errorLine");
-  if (stickyErr && Date.now() < stickyErr.until) {
-    el.textContent = "错误: " + stickyErr.msg;
-    el.classList.add("show");
-    return;
+/* 复制到剪贴板 (WebView2/非安全上下文兜底 execCommand) */
+async function copyText(t, btn, idle) {
+  let ok = true;
+  try { await navigator.clipboard.writeText(t); }
+  catch (_) {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = t; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      document.execCommand("copy"); ta.remove();
+    } catch (_2) { ok = false; }
   }
-  stickyErr = null;
-  if (s && s.lastError) {
-    el.textContent = "最近错误: " + s.lastError;
-    el.classList.add("show");
-  } else {
-    el.classList.remove("show");
-    el.textContent = "";
+  if (btn) {
+    btn.textContent = ok ? "已复制" : "复制失败";
+    setTimeout(() => { btn.textContent = idle || "复制"; }, 1500);
   }
 }
 
-function applyStatus(s) {
-  phase = s.phase;
-  setBadge($("phaseBadge"), $("phaseText"), s.phase);
-  $("stRx").textContent = fmtBytes(s.rxBytes);
-  $("stTx").textContent = fmtBytes(s.txBytes);
-  $("stClients").textContent = fmtBytes(s.clients);
-  $("stUptime").textContent = fmtUptime(s.uptimeSec);
-  renderError(s);
+/* ================= 火花线 (最近 60 秒速率) ================= */
+function sparkSvg(vals, color) {
+  const n = vals.length;
+  const w = 110, h = 26;
+  const max = Math.max(1, ...vals);
+  const step = w / (SPARK_CAP - 1);
+  let pts = "";
+  for (let i = 0; i < n; i++) {
+    const x = ((SPARK_CAP - n + i) * step).toFixed(1);
+    const y = (h - 2 - (vals[i] / max) * (h - 5)).toFixed(1);
+    pts += x + "," + y + " ";
+  }
+  if (!pts) return "";
+  const base = h - 1, lastX = ((SPARK_CAP - 1) * step).toFixed(1);
+  return '<polygon points="0,' + base + ' ' + pts.trim() + ' ' + lastX + ',' + base +
+    '" fill="' + color + '" fill-opacity=".12"/>' +
+    '<polyline points="' + pts.trim() + '" fill="none" stroke="' + color + '" stroke-width="1.5"/>';
+}
+function pushSpark() {
+  const now = Date.now();
+  if (now - lastSparkPush < 950) return;
+  lastSparkPush = now;
+  for (const b of bridges) {
+    let h = hist.get(b.id);
+    if (!h) { h = { rx: [], tx: [] }; hist.set(b.id, h); }
+    h.rx.push(Number(b.rxRate) || 0);
+    h.tx.push(Number(b.txRate) || 0);
+    if (h.rx.length > SPARK_CAP) h.rx.shift();
+    if (h.tx.length > SPARK_CAP) h.tx.shift();
+  }
+}
 
-  // 首次回包: 用服务端配置回填表单 (之后以用户输入为准)
-  if (!statusInit) {
-    statusInit = true;
-    if (s.port) {
-      addPortOption(s.port, "");
-      $("selPort").value = s.port;
+/* ================= 桥列表: 建卡 / 原位更新 (不整表重绘, 保焦点与确认态) ================= */
+function buildCard(id) {
+  const root = $("tplCard").content.firstElementChild.cloneNode(true);
+  const els = {
+    root,
+    name: root.querySelector(".bname"),
+    badge: root.querySelector(".badge"),
+    phase: root.querySelector(".bphase"),
+    toggle: root.querySelector(".act-toggle"),
+    cfgBtn: root.querySelector(".act-cfg"),
+    del: root.querySelector(".act-del"),
+    serial: root.querySelector(".n-serial"),
+    nName: root.querySelector(".n-name"),
+    listen: root.querySelector(".n-listen"),
+    copyUrl: root.querySelector(".mini-copy"),
+    wires: [...root.querySelectorAll(".wire")],
+    vRx: root.querySelector(".v-rx"),
+    vTx: root.querySelector(".v-tx"),
+    sRx: root.querySelector(".spark-rx"),
+    sTx: root.querySelector(".spark-tx"),
+    clients: root.querySelector(".v-clients"),
+    up: root.querySelector(".v-up"),
+    err: root.querySelector(".berr"),
+  };
+  els.name.addEventListener("click", () => openDrawer(id, els.cfgBtn));
+  els.cfgBtn.addEventListener("click", () => openDrawer(id, els.cfgBtn));
+  els.toggle.addEventListener("click", () => toggleBridge(id));
+  els.copyUrl.addEventListener("click", () => copyText(dataUrl(listenOf(id)), els.copyUrl));
+  els.del.addEventListener("click", () => armDelete(id, els));
+  root.addEventListener("click", (ev) => {
+    if (ev.target.closest("button")) return;
+    openDrawer(id, els.cfgBtn);
+  });
+  $("bridgeList").appendChild(root);
+  return els;
+}
+function listenOf(id) { const b = bridges.find((x) => x.id === id); return b ? (b.listen || "") : ""; }
+function dataUrl(listen) {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  return listen ? proto + "://" + listen + "/ws" : "";
+}
+function updateCard(els, b) {
+  const h = hist.get(b.id) || { rx: [], tx: [] };
+  els.name.textContent = b.name || b.id;
+  els.nName.textContent = b.name || b.id;
+  els.name.title = "打开「" + (b.name || b.id) + "」的管理抽屉";
+  els.serial.textContent = (b.serial && b.serial.port) || "—";
+  els.serial.title = (b.serial && b.serial.port) || "";
+  els.listen.textContent = b.listen || "—";
+  els.listen.title = b.listen || "";
+  setBadge(els.badge, els.phase, b.phase);
+  const starting = b.phase === "closed";
+  els.toggle.textContent = starting ? "启动" : "停止";
+  els.toggle.classList.toggle("primary", starting);
+  els.toggle.title = starting ? "连上串口开始转发" : "这座桥暂停工作, 串口会断开";
+  els.vRx.textContent = fmtRateField(b.rxRate);
+  els.vTx.textContent = fmtRateField(b.txRate);
+  const rxOn = (Number(b.rxRate) || 0) > 0, txOn = (Number(b.txRate) || 0) > 0;
+  for (const w of els.wires) {
+    w.querySelector(".wrx").classList.toggle("on-rx", rxOn);
+    w.querySelector(".wtx").classList.toggle("on-tx", txOn);
+  }
+  els.sRx.innerHTML = sparkSvg(h.rx, C_RX);
+  els.sTx.innerHTML = sparkSvg(h.tx, C_TX);
+  els.clients.textContent = fmtBytes(b.clients);
+  els.up.textContent = fmtUptime(b.uptimeSec);
+  if (b.lastError) { els.err.textContent = "上次出错: " + b.lastError; els.err.classList.add("show"); }
+  else { els.err.classList.remove("show"); els.err.textContent = ""; }
+}
+function syncCards() {
+  const seen = new Set();
+  for (const b of bridges) {
+    seen.add(b.id);
+    let e = cards.get(b.id);
+    if (!e) { e = buildCard(b.id); cards.set(b.id, e); }
+    updateCard(e, b);
+  }
+  for (const [id, e] of cards) {
+    if (!seen.has(id)) {
+      e.root.remove(); cards.delete(id); hist.delete(id);
+      if (drawerId === id) { closeDrawer(); notice("这座桥已被删除", "err"); }
     }
-    if (s.baud) $("inBaud").value = s.baud;
-    $("inMaxClients").value = s.maxClients; // FR-9b (ADR-9: 第 10 字段)
-    $("inAddr").value = location.host;      // FR-9a: 当前监听地址
-    $("selFlow").value = s.flow;            // FIX-17 (ADR-11: 第 11 字段, 回显根治静默降级)
-    flowUserEdited = false;
-    const m = /^([78])([NEO])([12])$/.exec(s.config || "");
-    if (m) {
-      $("selData").value = m[1];
-      $("selParity").value = m[2];
-      $("selStop").value = m[3];
-    }
   }
-
-  // 未打开态: 配置可编辑; 打开态: 参数锁定 (热改需 close→config→open, spec 非目标)
-  const cfgLocked = s.phase !== "closed";
-  $("selPort").disabled = cfgLocked;
-  $("inBaud").disabled = cfgLocked;
-  $("inMaxClients").disabled = cfgLocked;
-  $("cfgParams").disabled = cfgLocked;
-  $("btnScan").disabled = cfgLocked;
-  $("btnOpen").disabled = cfgLocked || !$("selPort").value;
-  $("btnClose").disabled = s.phase === "closed";
-
-  // FIX-17 (ADR-11): flow 以服务端回显为准 —— CLI 设置的流控必须在 UI 可见;
-  // 用户在 closed 态改动过的选择优先 (打开动作会把表单 flow 发给服务端并回显一致)。
-  if (s.flow !== $("selFlow").value) {
-    if (!flowUserEdited || s.phase !== "closed") {
-      $("selFlow").value = s.flow;
-      flowUserEdited = false;
-    }
-  }
-
-  // FR-9a/ADR-12: 改地址 = 原地换绑 (不重启进程), 任何页面都可用 —— 不再按壳门控。
-  // 现有 WS 连接会随 TCP 面切换断开, 页面自动重连新地址; 终端历史与串口会话保留。
-  $("restartHint").textContent = "桥将切换到新地址; 串口会话与终端历史保留, 现有连接需重连";
-
-  // FIX-20: 「退出程序」只对桌面壳有意义 (浏览器/HEADLESS 页点了也没用) —— 置灰。
-  $("btnQuit").disabled = !shell || quitBusy;
-  $("btnQuit").title = shell
-    ? "优雅停止 SerialHub 服务并退出程序 (含托盘/串口清理)"
-    : "仅桌面壳窗口可用";
-
-  // 发送区: FIX-18 —— 使能只由相位决定 ("徽章 open ⇒ 发送可用"恒成立, 自重启后
-  // 不再死锁); WS 断开/被拒时发送会就地报错, 并在提示行给出真实原因 (FIX-19)。
-  const canSend = s.phase === "open";
-  $("inSend").disabled = !canSend;
-  $("btnSend").disabled = !canSend;
-  const hint = $("sendHint");
-  if (!canSend) {
-    sendErrUntil = 0;
-    wsRejected = false;
-    $("inSend").classList.remove("invalid");
-    hint.classList.remove("err");
-    hint.textContent = "串口未打开, 发送区禁用";
-  } else if (wsRejected) {
-    hint.classList.add("err");
-    hint.textContent = "WS 被拒: 已达最大客户端数 (1013), 发送不可用";
-  } else if (Date.now() < sendErrUntil) {
-    hint.classList.add("err"); // 保留 doSend 写入的错误文案
-  } else {
-    hint.classList.remove("err");
-    hint.textContent = "回车发送 · " + (sendMode === "hex" ? "HEX 字节" : "UTF-8 文本");
-  }
-  updateEquivCmd(); // FR-9c: 任意状态/配置变化即时刷新等价命令
+  let ordered = true;
+  bridges.forEach((b, i) => { const e = cards.get(b.id); if (!e || $("bridgeList").children[i] !== e.root) ordered = false; });
+  if (!ordered) for (const b of bridges) $("bridgeList").appendChild(cards.get(b.id).root);
+  $("fleetCount").textContent = bridges.length;
+  $("emptyBox").hidden = bridges.length > 0;
 }
 
-/* FR-9c: 与当前控制台配置完全等价的 CLI 命令 (配置任何一项变动即时刷新) */
-function updateEquivCmd() {
-  const port = $("selPort").value;
-  const baud = $("inBaud").value || "115200";
-  const cfgStr = $("selData").value + $("selParity").value + $("selStop").value;
-  const mc = $("inMaxClients").value === "" ? "0" : $("inMaxClients").value;
-  const addr = $("inAddr").value.trim() || location.host;
-  let cmd = "serialhub";
-  if (port) cmd += " --port " + port;
-  // FIX-16: --flow 始终显式携带 (含 none), 与自我重启参数组策略一致 —— 照抄零失真
-  cmd += " --flow " + $("selFlow").value;
-  cmd += " --max-clients " + mc + " --addr " + addr;
-  $("equivCmd").textContent = cmd;
-}
-
+/* ================= 轮询 ================= */
 async function poll() {
-  try { applyStatus(await api("/api/status")); }
-  catch (_) { /* 服务未就绪时静默, 下一轮再试 */ }
+  try {
+    const j = await api("/api/fleet");
+    connOk = true; /* 恢复后横幅自动消失 (静默), 不打扰 */
+    bridges = Array.isArray(j.bridges) ? j.bridges : [];
+    pushSpark();
+    syncCards();
+    syncDrawerLive();
+  } catch (_) {
+    if (connOk) { connOk = false; notice("页面刷新中断, 正在自动重连…", "err"); }
+  }
 }
 
-/* ================= 串口扫描 / 打开 / 关闭 ================= */
-function addPortOption(name, desc) {
-  const sel = $("selPort");
-  if ([...sel.options].some((o) => o.value === name)) {
-    if (desc) { const o = [...sel.options].find((o) => o.value === name); o.textContent = desc ? name + " — " + desc : name; o.title = desc; }
+/* ================= 启停 / 删除 ================= */
+async function toggleBridge(id) {
+  const b = bridges.find((x) => x.id === id);
+  if (!b) return;
+  const starting = b.phase === "closed";
+  try {
+    await api("/api/fleet/" + id + (starting ? "/start" : "/stop"), {});
+  } catch (e) {
+    notice((starting ? "启动失败: " : "停止失败: ") + e.message, "err");
+  }
+  poll();
+}
+/* 删除两段确认 (UI-0): 大白话预告后果, 3s 不确认自动复原 */
+function armDelete(id, els) {
+  const btn = els.del, name = (bridges.find((x) => x.id === id) || {}).name || id;
+  if (btn.dataset.armed !== "1") {
+    btn.dataset.armed = "1";
+    btn.textContent = "确认删除?";
+    btn.classList.add("armed");
+    notice("这座桥会立刻停止并被删掉, 已连的网页会断开; 串口和设备不受影响, 以后可以随时再建。再点一次「确认删除?」。", "err");
+    setTimeout(() => {
+      if (btn.dataset.armed === "1") {
+        btn.dataset.armed = "0";
+        btn.textContent = "删除";
+        btn.classList.remove("armed");
+      }
+    }, 3000);
     return;
   }
-  const o = document.createElement("option");
-  o.value = name;
-  o.textContent = desc ? name + " — " + desc : name;
-  o.title = desc || name;
-  sel.appendChild(o);
+  btn.dataset.armed = "0";
+  btn.disabled = true;
+  api("/api/fleet/" + id + "/delete", {})
+    .then(() => { notice("已删除: " + name, "ok"); })
+    .catch((e) => {
+      notice("删除失败: " + e.message, "err");
+      btn.disabled = false; btn.textContent = "删除";
+    })
+    .finally(poll);
 }
 
-async function scanPorts() {
+/* ================= 串口扫描 (弹窗/抽屉共用) ================= */
+function fillPortSelect(sel, ports, cur) {
+  sel.innerHTML = "";
+  if (!ports.length) {
+    const o = document.createElement("option");
+    o.value = ""; o.textContent = "没找到串口 — 插好设备再点「扫描」";
+    sel.appendChild(o);
+  }
+  for (const p of ports) {
+    const o = document.createElement("option");
+    o.value = p.name;
+    o.textContent = p.desc ? p.name + " — " + p.desc : p.name;
+    o.title = p.desc || p.name;
+    sel.appendChild(o);
+  }
+  if (cur && [...sel.options].some((o) => o.value === cur)) sel.value = cur;
+}
+async function scanInto(sel) {
+  const cur = sel.value;
   try {
     const j = await api("/api/ports");
-    const cur = $("selPort").value;
-    $("selPort").innerHTML = "";
-    if (!j.ports.length) {
-      const o = document.createElement("option"); o.value = ""; o.textContent = "(未发现串口)";
-      $("selPort").appendChild(o);
-    }
-    for (const p of j.ports) addPortOption(p.name, p.desc);
-    if (cur && [...$("selPort").options].some((o) => o.value === cur)) $("selPort").value = cur;
-    updateEquivCmd();
-  } catch (e) { showClientError("扫描失败: " + e.message); }
+    fillPortSelect(sel, j.ports || [], cur);
+  } catch (e) { notice("扫描串口没成功: " + e.message, "err"); }
+}
+function ensurePortOption(sel, port) {
+  if (!port) return;
+  if (![...sel.options].some((o) => o.value === port)) {
+    const o = document.createElement("option");
+    o.value = port; o.textContent = port;
+    sel.appendChild(o);
+  }
+  sel.value = port;
 }
 
-function collectConfig(baud) {
-  return {
-    port: $("selPort").value,
-    baud: baud,
-    dataBits: parseInt($("selData").value, 10),
-    parity: $("selParity").value,
-    stopBits: parseInt($("selStop").value, 10),
-    flow: $("selFlow").value,
-    maxClients: parseInt($("inMaxClients").value, 10) || 0, // FR-9b: 0=不限
-  };
-}
-
-/* FIX-3: 波特率就地校验, 不合法红框 + 红字, 不发请求 */
-function validateBaudInput() {
-  const raw = $("inBaud").value.trim();
+/* ================= 校验 ================= */
+function validateBaud(input) {
+  const raw = String(input.value).trim();
   const v = parseInt(raw, 10);
   if (!Number.isFinite(v) || String(v) !== String(Number(raw)) || v < BAUD_MIN || v > BAUD_MAX) {
-    $("inBaud").classList.add("invalid");
-    showClientError("波特率 \"" + raw + "\" 无效, 允许范围 [" + BAUD_MIN + ", " + BAUD_MAX + "]");
-    return null;
+    input.classList.add("invalid");
+    return { err: "波特率要填 110 ~ 2000000 之间的数字, 例如 115200" };
   }
-  return v;
+  input.classList.remove("invalid");
+  return { val: v };
+}
+function validateListen(input) {
+  const raw = String(input.value).trim();
+  if (!/^[0-9a-zA-Z.:\[\]-]+:[0-9]+$/.test(raw)) {
+    input.classList.add("invalid");
+    return { err: "网址要写成 IP:端口, 例如 127.0.0.1:9001" };
+  }
+  input.classList.remove("invalid");
+  return { val: raw };
 }
 
-async function openPort() {
-  stickyErr = null;
-  $("inBaud").classList.remove("invalid");
-  const baud = validateBaudInput();
-  if (baud === null) return;
+/* ================= 新建桥 (提交即建即启) =================
+   校验失败: 就地红字 (P3) —— 错误紧跟出错字段, 输入框红框并聚焦 */
+const NP_ERR_SLOTS = ["npErrName", "npErrPort", "npErrBaud", "npErrListen"];
+const NP_ERR_INPUT = { npErrName: "npName", npErrPort: null, npErrBaud: "npBaud", npErrListen: "npListen" };
+function npFieldErr(slotId, msg) {
+  NP_ERR_SLOTS.forEach((id) => { const el = $(id); el.hidden = true; el.textContent = ""; });
+  ["npName", "npPort", "npBaud", "npListen"].forEach((id) => $(id).classList.remove("invalid"));
+  if (slotId) {
+    $(slotId).textContent = msg;
+    $(slotId).hidden = false;
+    const inp = NP_ERR_INPUT[slotId];
+    if (inp) { $(inp).classList.add("invalid"); $(inp).focus(); }
+  }
+}
+const dlgNew = $("dlgNew");
+function openNew() {
+  dlgErr(null);
+  npFieldErr(null, null);
+  $("npName").value = "桥 " + (bridges.length + 1);
+  $("npBaud").value = 115200;
+  $("npData").value = "8"; $("npParity").value = "N"; $("npStop").value = "2"; $("npFlow").value = "none";
+  $("npListen").value = "127.0.0.1:" + (9001 + bridges.length);
+  $("npPort").innerHTML = "<option value=\"\">(扫描中…)</option>";
+  scanInto($("npPort"));
+  dlgNew.showModal();
+  $("npName").focus();
+}
+function dlgErr(msg) {
+  const el = $("npErr");
+  if (msg) { el.textContent = msg; el.classList.add("show"); }
+  else el.classList.remove("show");
+}
+async function createBridge() {
+  npFieldErr(null, null);
+  const name = $("npName").value.trim();
+  const port = $("npPort").value;
+  const baud = validateBaud($("npBaud"));
+  const listen = validateListen($("npListen"));
+  if (!name) { npFieldErr("npErrName", "请给桥起个名字"); return; }
+  if (!port) { npFieldErr("npErrPort", "请选择串口 (点「扫描」刷新列表)"); return; }
+  if (baud.err) { npFieldErr("npErrBaud", baud.err); return; }
+  if (listen.err) { npFieldErr("npErrListen", listen.err); return; }
+  const body = {
+    name,
+    serial: {
+      port,
+      baud: baud.val,
+      dataBits: parseInt($("npData").value, 10),
+      parity: $("npParity").value,
+      stopBits: parseInt($("npStop").value, 10),
+      flow: $("npFlow").value,
+    },
+    listen: listen.val,
+  };
+  const btn = $("btnCreate");
+  btn.disabled = true;
   try {
-    await api("/api/config", collectConfig(baud)); // 先写配置再打开, 保证"所见即所开"
-    await api("/api/open", {});
-    await poll();
-  } catch (e) { showClientError(e.message); await poll(); }
+    const j = await api("/api/fleet", body);
+    dlgNew.close();
+    notice("已创建并启动: " + name + (j && j.id ? " (" + j.id + ")" : ""), "ok");
+  } catch (e) {
+    dlgErr(e.message);
+  } finally {
+    btn.disabled = false;
+    poll();
+  }
 }
 
-async function closePort() {
-  try { await api("/api/close", {}); await poll(); }
-  catch (e) { showClientError(e.message); }
+/* ================= 每桥抽屉 ================= */
+const drawer = $("drawer"), mask = $("mask");
+const TABS = ["cfg", "tap", "stats"];
+
+function fillCfg(b) {
+  $("cfName").value = b.name || "";
+  ensurePortOption($("cfPort"), b.serial && b.serial.port);
+  $("cfBaud").value = (b.serial && b.serial.baud) || 115200;
+  const m = /^([78])([NEO])([12])$/.exec((b.serial && b.serial.config) || "");
+  $("cfData").value = m ? m[1] : "8";
+  $("cfParity").value = m ? m[2] : "N";
+  $("cfStop").value = m ? m[3] : "2";
+  $("cfFlow").value = (b.serial && b.serial.flow) || "none";
+  $("cfListen").value = b.listen || "";
+  /* 契约注: fleet 列表暂无 maxClients 回显字段, 缺省按 0 (不限) 显示 —— 见报告 SPEC-QUESTION */
+  $("cfMax").value = typeof b.maxClients === "number" ? b.maxClients : 0;
+  $("cfErr").classList.remove("show");
+  updateCfDerived();
+}
+function updateCfDerived() {
+  const listen = $("cfListen").value.trim();
+  $("cfDataUrl").textContent = listen ? dataUrl(listen) : "(填写网址端口后生成)";
+  const cfg = $("cfData").value + $("cfParity").value + $("cfStop").value;
+  const mc = $("cfMax").value === "" ? "0" : $("cfMax").value;
+  let cmd = "serialhub";
+  if ($("cfPort").value) cmd += " --port " + $("cfPort").value;
+  cmd += " --baud " + ($("cfBaud").value || "115200");
+  cmd += " --config " + cfg + " --flow " + $("cfFlow").value;
+  cmd += " --max-clients " + mc;
+  if (listen) cmd += " --addr " + listen;
+  $("cfEquiv").textContent = cmd;
+}
+function cfgErr(msg) {
+  const el = $("cfErr");
+  if (msg) { el.textContent = msg; el.classList.add("show"); }
+  else el.classList.remove("show");
+}
+async function saveCfg() {
+  if (!drawerId) return;
+  const b = bridges.find((x) => x.id === drawerId);
+  if (!b) return;
+  const name = $("cfName").value.trim();
+  if (!name) { cfgErr("请给桥起个名字"); return; }
+  const body = { name };
+  if (b.phase === "closed") {
+    const port = $("cfPort").value;
+    const baud = validateBaud($("cfBaud"));
+    const listen = validateListen($("cfListen"));
+    if (!port) { cfgErr("请选择串口 (点「扫描」刷新列表)"); return; }
+    if (baud.err) { cfgErr(baud.err); return; }
+    if (listen.err) { cfgErr(listen.err); return; }
+    body.serial = {
+      port,
+      baud: baud.val,
+      dataBits: parseInt($("cfData").value, 10),
+      parity: $("cfParity").value,
+      stopBits: parseInt($("cfStop").value, 10),
+      flow: $("cfFlow").value,
+    };
+    body.listen = listen.val;
+    body.maxClients = parseInt($("cfMax").value, 10) || 0;
+  }
+  try {
+    await api("/api/fleet/" + drawerId + "/config", body);
+    cfgErr(null);
+    notice("设置已保存" + (b.phase === "closed" ? "; 点「启动」后生效" : ""), "ok");
+  } catch (e) { cfgErr(e.message); }
+  poll();
+}
+function openDrawer(id, opener) {
+  const b = bridges.find((x) => x.id === id);
+  if (!b) return;
+  lastFocus = opener || document.activeElement;
+  if (tapBridgeId !== id) { disconnectTap(); tapBridgeId = id; resetStream(); clearTerm(); }
+  fillCfg(b);
+  drawerId = id;
+  drawer.hidden = false; mask.hidden = false;
+  switchTab(activeTab);
+  scanInto($("cfPort"));
+  syncDrawerLive(); /* 标题/徽章/锁定态立即就位, 不等下一轮轮询 */
+  $("drClose").focus();
+}
+function closeDrawer() {
+  drawer.hidden = true; mask.hidden = true;
+  drawerId = null;
+  disconnectTap();
+  if (lastFocus && lastFocus.isConnected) lastFocus.focus();
+}
+/* 抽屉焦点圈: Tab 在抽屉内循环, Esc 关闭 */
+drawer.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape") { ev.preventDefault(); closeDrawer(); return; }
+  if (ev.key !== "Tab") return;
+  const f = [...drawer.querySelectorAll("button,input,select,[href],textarea")]
+    .filter((el) => !el.disabled && el.offsetParent !== null);
+  if (!f.length) return;
+  const first = f[0], last = f[f.length - 1];
+  if (ev.shiftKey && document.activeElement === first) { ev.preventDefault(); last.focus(); }
+  else if (!ev.shiftKey && document.activeElement === last) { ev.preventDefault(); first.focus(); }
+});
+mask.addEventListener("click", closeDrawer);
+$("drClose").addEventListener("click", closeDrawer);
+
+function switchTab(name) {
+  activeTab = name;
+  for (const t of TABS) {
+    const btn = $("tb-" + t), pan = $("pan-" + t);
+    const on = t === name;
+    btn.setAttribute("aria-selected", on ? "true" : "false");
+    btn.tabIndex = on ? 0 : -1;
+    pan.hidden = !on;
+  }
+  if (name === "tap") { tapWant = true; connectTap(); }
+  else disconnectTap();
+}
+/* 标签页切换: 点击 + 左右方向键 (键盘可达) */
+for (let i = 0; i < TABS.length; i++) {
+  $("tb-" + TABS[i]).addEventListener("click", () => switchTab(TABS[i]));
+  $("tb-" + TABS[i]).addEventListener("keydown", (ev) => {
+    if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight") return;
+    ev.preventDefault();
+    const d = ev.key === "ArrowRight" ? 1 : -1;
+    const cur = TABS.indexOf(activeTab);
+    const next = TABS[(cur + d + TABS.length) % TABS.length];
+    switchTab(next);
+    $("tb-" + next).focus();
+  });
 }
 
-/* ================= 终端 (FR-6 / UI-4) =================
-   FIX-1 + NEW-1: 入站合并 = 单一 flush 路径状态机。
-   - onRxFrames 只做一件事: 把帧 append 进唯一缓冲 rxBuf (未完行前缀 + 新帧);
-   - 定时器是唯一出缓冲路径: flushLines 持代次执行, 过期代次直接丢弃 (双保险);
-   - 未完行 (最后一个 \n 之后的尾巴) 留在 rxBuf 头部, 只被后续帧追加 (append-only),
-     绝不重放; 每个字节恰好进入缓冲一次、恰好渲染一次或滞留为 carry (< LINE_MAX);
-   - 无 \n 的长二进制流超 LINE_MAX 才强制断行 (防内存/显示爆炸);
-   - window.__sh 是 QA 观测口: bytesIn (WS 进) / bytesOut (渲染出) / frames,
-     守恒关系: bytesOut ≤ bytesIn ≈ /api/status 的 rxBytes。 */
-const FLUSH_MS = 20;      // 合并窗口
-const LINE_MAX = 512;     // 单行字节上限 (无 \n 的二进制流防内存/显示爆炸)
-const HEX_PER_ROW = 16;   // FIX-2: HEX 视图每行 16 字节, 只在字节边界折行
+/* 抽屉实时区 (每轮轮询原位刷新, 不碰正在编辑的表单值) */
+function syncDrawerLive() {
+  if (!drawerId) return;
+  const b = bridges.find((x) => x.id === drawerId);
+  if (!b) return;
+  $("drTitle").textContent = b.name || b.id;
+  setBadge($("drBadge"), $("drPhase"), b.phase);
+  $("drDataUrl").textContent = dataUrl(b.listen) || "—";
+  /* 统计页 */
+  $("stClients").textContent = fmtBytes(b.clients);
+  $("stUptime").textContent = fmtUptime(b.uptimeSec);
+  $("stRxRate").textContent = fmtRateField(b.rxRate);
+  $("stTxRate").textContent = fmtRateField(b.txRate);
+  $("stRx").textContent = fmtBytes(b.rxBytes);
+  $("stTx").textContent = fmtBytes(b.txBytes);
+  $("sparkBigRx").innerHTML = sparkSvgWide((hist.get(b.id) || { rx: [] }).rx, C_RX, 300, 40);
+  $("sparkBigTx").innerHTML = sparkSvgWide((hist.get(b.id) || { tx: [] }).tx, C_TX, 300, 40);
+  const fl = b.serial && b.serial.flow;
+  $("stParam").innerHTML =
+    "串口 <b>" + esc((b.serial && b.serial.port) || "—") + "</b> · <b>" + esc(String((b.serial && b.serial.baud) || "—")) +
+    "</b> · <b>" + esc((b.serial && b.serial.config) || "—") + "</b> · 流控 <b>" + esc(FLOW_TEXT[fl] || fl || "—") +
+    "</b> · 网址 <b>" + esc(b.listen || "—") + "</b>";
+  if (b.lastError) { $("stErr").textContent = "上次出错: " + b.lastError; $("stErr").classList.add("show"); }
+  else { $("stErr").classList.remove("show"); $("stErr").textContent = ""; }
+  /* 设置页: 串口打开期间锁定参数 (热改需先停止), 名称除外 */
+  const locked = b.phase !== "closed";
+  ["cfPort", "btnCfScan", "cfBaud", "cfData", "cfParity", "cfStop", "cfFlow", "cfListen", "cfMax", "btnCfSave"]
+    .forEach((id) => { $(id).disabled = locked; });
+  const hint = $("cfLockHint");
+  if (locked) {
+    hint.textContent = "这座桥正在运行; 先点「停止」, 再修改设置";
+    hint.classList.add("show");
+  } else hint.classList.remove("show");
+}
+/* 统计页大号火花线 (尺寸参数化, 与卡片小线同源) */
+function sparkSvgWide(vals, color, w, h) {
+  const n = vals.length;
+  if (!n) return "";
+  const max = Math.max(1, ...vals);
+  const step = w / (SPARK_CAP - 1);
+  let pts = "";
+  for (let i = 0; i < n; i++) {
+    const x = ((SPARK_CAP - n + i) * step).toFixed(1);
+    const y = (h - 3 - (vals[i] / max) * (h - 8)).toFixed(1);
+    pts += x + "," + y + " ";
+  }
+  const base = h - 1, lastX = ((SPARK_CAP - 1) * step).toFixed(1);
+  return '<polygon points="0,' + base + ' ' + pts.trim() + ' ' + lastX + ',' + base +
+    '" fill="' + color + '" fill-opacity=".12"/>' +
+    '<polyline points="' + pts.trim() + '" fill="none" stroke="' + color + '" stroke-width="1.5"/>';
+}
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+/* ================= 侦听终端 (FR-10e: 只读旁看串口流) =================
+   渲染 = 单一 flush 路径状态机 (沿用 Sprint1 FIX-1/NEW-1 方案):
+   - onRxFrames 只把帧 append 进唯一缓冲 rxBuf; 定时器是唯一出缓冲路径;
+   - 未完行 (最后一个 \n 之后的尾巴) 留在 rxBuf 头部只追加不重放;
+   - 无 \n 长流超 LINE_MAX 强制断行; window.__sh 保留 QA 观测口。 */
+const FLUSH_MS = 20;
+const LINE_MAX = 512;
+const HEX_PER_ROW = 16;
 
 const EMPTY_BUF = new Uint8Array(0);
-let rxBuf = EMPTY_BUF;    // 唯一入站缓冲 (单真相源, 无第二份行状态)
+let rxBuf = EMPTY_BUF;
 let rxTimer = null;
-let rxGen = 0;            // 调度代次
+let rxGen = 0;
 window.__sh = { frames: 0, bytesIn: 0, linesOut: 0, bytesOut: 0 };
 
 function onRxFrames(bytes) {
@@ -548,32 +1096,27 @@ function onRxFrames(bytes) {
     rxTimer = setTimeout(() => { rxTimer = null; flushLines(gen); }, FLUSH_MS);
   }
 }
-
 function flushLines(gen) {
-  if (gen !== rxGen) return;  // 过期代次: 已有更新的调度, 本次不处理
+  if (gen !== rxGen) return;
   if (!rxBuf.length) return;
   const buf = rxBuf;
-  rxBuf = EMPTY_BUF;          // 唯一出缓冲点: 整段交换走, 渲染期间新帧只进新缓冲
+  rxBuf = EMPTY_BUF;
   let start = 0;
   for (let i = 0; i < buf.length; i++) {
-    if (buf[i] === 0x0a) { emitLine(buf.subarray(start, i), false); start = i + 1; }
+    if (buf[i] === 0x0a) { emitLine(buf.subarray(start, i)); start = i + 1; }
   }
   const tailLen = buf.length - start;
   if (tailLen >= LINE_MAX) {
-    // 无 \n 长二进制流: 按 LINE_MAX 强制断行, 全部出缓冲
     for (let i = 0; i < tailLen; i += LINE_MAX) {
-      emitLine(buf.subarray(start + i, start + Math.min(i + LINE_MAX, tailLen)), false);
+      emitLine(buf.subarray(start + i, start + Math.min(i + LINE_MAX, tailLen)));
     }
   } else if (tailLen > 0) {
-    // 未完行放回缓冲头: 之后只被追加, 绝不重放
     rxBuf = buf.slice(start);
   }
   window.__sh.bytesOut += buf.length - ((tailLen > 0 && tailLen < LINE_MAX) ? tailLen : 0);
   window.__sh.linesOut = entries.length;
 }
-
-/* ASCII 视图 (FIX-4): 逐字节渲染 —— 可打印 ASCII 原样, 其余 (0x00-1F/0x7F/0x80-FF)
-   统一受控占位 ·, 每字节恰好一个字符宽; 不再经 UTF-8 解码 (0x80+ 会变乱码字形)。 */
+/* ASCII 视图: 可打印 ASCII 原样, 其余字节统一受控占位 · (不经 UTF-8 解码, 0x80+ 不出乱码) */
 function asciiOf(bytes) {
   let out = "";
   for (let i = 0; i < bytes.length; i++) {
@@ -582,7 +1125,6 @@ function asciiOf(bytes) {
   }
   return out;
 }
-
 function hexRow(bytes, off) {
   let out = "";
   const end = Math.min(off + HEX_PER_ROW, bytes.length);
@@ -591,10 +1133,14 @@ function hexRow(bytes, off) {
   }
   return out;
 }
+let viewMode = "ascii";
+let showTs = false;
+let paused = false;
+let entries = [];
 
 function lineNode(e) {
   const div = document.createElement("div");
-  div.className = "ln " + (e.tx ? "tx" : "rx");
+  div.className = "ln";
   if (showTs) {
     const t = document.createElement("span");
     t.className = "ts";
@@ -615,22 +1161,18 @@ function lineNode(e) {
   }
   return div;
 }
-
-/* 出行: 掐掉行尾 \r (CRLF 常见), 空行照记 */
-function emitLine(bytes, tx) {
+function emitLine(bytes) {
   let b = bytes;
   if (b.length && b[b.length - 1] === 0x0d) b = b.subarray(0, b.length - 1);
-  const e = { bytes: b, tx, ts: Date.now() };
+  const e = { bytes: b, ts: Date.now() };
   entries.push(e);
   if (entries.length > MAX_LINES) entries.shift();
   appendEntry(e);
 }
-
 function trimTerm() {
   const term = $("term");
   while (term.childElementCount > MAX_LINES) term.removeChild(term.firstChild);
 }
-
 function appendEntry(e) {
   const term = $("term");
   const empty = term.querySelector(".empty");
@@ -640,7 +1182,6 @@ function appendEntry(e) {
   $("lineCount").textContent = entries.length + " / " + MAX_LINES + " 行";
   if (!paused) term.scrollTop = term.scrollHeight;
 }
-
 function rebuildTerm() {
   const term = $("term");
   term.innerHTML = "";
@@ -649,217 +1190,80 @@ function rebuildTerm() {
   $("lineCount").textContent = entries.length + " / " + MAX_LINES + " 行";
   term.scrollTop = term.scrollHeight;
 }
-
 function clearTerm() {
   entries = [];
-  $("term").innerHTML = '<div class="empty">— 尚无数据 —</div>';
+  rxBuf = EMPTY_BUF;
+  $("term").innerHTML = '<div class="empty">还没有数据 — 串口一有动静就会显示在这里</div>';
   $("lineCount").textContent = "0 / " + MAX_LINES + " 行";
 }
+function resetStream() { rxBuf = EMPTY_BUF; }
 
-/* ================= WebSocket 数据面 (纯二进制) ================= */
-function wsUrl() {
+/* ================= 侦听通道 (只读, 每桥独立) =================
+   串口 RX 原始字节旁听; 页面本身不占数据面名额, 只在侦听页打开时连接。 */
+let tap = null, tapGen = 0, tapBridgeId = null, tapWant = false;
+function tapUrl(id) {
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  return proto + "://" + location.host + "/ws";
+  return proto + "://" + location.host + "/api/fleet/" + encodeURIComponent(id) + "/tap";
 }
-
-/* FIX-11: WS 单连接状态机。旧实现的守卫放过 CLOSING 态 (服务端仍计为客户端),
-   且迟到 onclose 会把新 socket 置 null → 孤儿连接 + 重连 = 双 WS (UX: GUI clients 恒 2)。
-   现版: ① readyState!==3 (CONNECTING/OPEN/CLOSING) 一律复用; ② 每条 socket 持代次,
-   迟到的旧事件不碰当前状态; ③ 只有当前 socket 的 onclose 才置 null 并安排重连。 */
-function connectWs() {
-  if (ws && ws.readyState !== 3) return;
-  const gen = ++wsGen;
-  try { ws = new WebSocket(wsUrl()); } catch (_) { scheduleReconnect(); return; }
-  ws.binaryType = "arraybuffer";
-
-  ws.onopen = () => {
-    if (gen !== wsGen) return;
-    wsRejected = false; // 重连成功, 清除被拒状态 (FIX-19)
-    $("wsBadge").classList.remove("b-closed");
-    $("wsBadge").classList.add("b-open");
-    $("wsBadgeText").textContent = "WS 已连接";
-    poll();
+function setTapStatus(st) {
+  const b = $("tapBadge"), t = $("tapBadgeText");
+  b.classList.remove("b-open", "b-opening", "b-retry", "b-closed");
+  if (st === "open") { b.classList.add("b-open"); t.textContent = "已连接"; }
+  else if (st === "connecting") { b.classList.add("b-opening"); t.textContent = "连接中"; }
+  else { b.classList.add("b-closed"); t.textContent = "未连接"; }
+}
+function connectTap() {
+  if (!tapWant || !drawerId || tapBridgeId !== drawerId) return;
+  if (tap && tap.readyState !== 3) return;
+  setTapStatus("connecting");
+  const gen = ++tapGen;
+  const id = drawerId;
+  try { tap = new WebSocket(tapUrl(id)); } catch (_) { tap = null; setTimeout(connectTap, 1000); return; }
+  tap.binaryType = "arraybuffer";
+  tap.onopen = () => {
+    if (gen !== tapGen) return;
+    setTapStatus("open");
+    const hint = $("tapHint");
+    hint.classList.remove("err");
+    hint.textContent = "这里只是旁看; 想发数据, 请用连在这座桥上的网页/程序。";
   };
-  ws.onmessage = (ev) => {
-    if (gen !== wsGen) return;
+  tap.onmessage = (ev) => {
+    if (gen !== tapGen) return;
     const data = ev.data;
     if (data instanceof ArrayBuffer && data.byteLength) onRxFrames(new Uint8Array(data));
     else if (typeof data === "string" && data.length) onRxFrames(encoder.encode(data));
   };
-  ws.onclose = (ev) => {
-    if (gen !== wsGen) return;
-    setBadge($("wsBadge"), $("wsBadgeText"), "closed");
-    $("wsBadge").classList.remove("b-open");
-    $("wsBadge").classList.add("b-closed");
-    $("wsBadgeText").textContent = "WS 未连接";
-    // FIX-19: 被拒客户端可见性 —— close 1013 = 已达最大客户端数, 页面横幅明示
-    if (ev.code === 1013) {
-      wsRejected = true;
-      showClientError("连接被拒: 已达到最大客户端数 (1013)");
-    }
-    ws = null;
-    scheduleReconnect();
-    poll();
-  };
-  ws.onerror = () => { if (gen !== wsGen) return; try { ws && ws.close(); } catch (_) {} };
-}
-
-function scheduleReconnect() {
-  setTimeout(connectWs, 1000);
-}
-
-/* ================= 发送 ================= */
-function parseHex(text) {
-  const t = text.replace(/0x/gi, "").replace(/[\s,;:_\-]+/g, "");
-  if (t === "") throw new Error("HEX 内容为空");
-  if (!/^[0-9a-fA-F]+$/.test(t) || t.length % 2 !== 0)
-    throw new Error("应为偶数位十六进制, 如 AA BB 01");
-  const out = new Uint8Array(t.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(t.substr(i * 2, 2), 16);
-  return out;
-}
-
-function doSend() {
-  if ($("inSend").disabled) return;
-  const raw = $("inSend").value;
-  if (raw === "") return;
-  let bytes;
-  if (sendMode === "hex") {
-    try {
-      bytes = parseHex(raw);
-    } catch (e) {
-      /* FIX-3: 就地红色错误提示, 不发送, 输入保留 */
-      $("inSend").classList.add("invalid");
-      sendErrUntil = Date.now() + 8000;
-      const hint = $("sendHint");
-      hint.textContent = "无法解析为字节: " + raw.trim() + " (" + e.message + ")";
+  tap.onclose = (ev) => {
+    if (gen !== tapGen) return;
+    setTapStatus("closed");
+    tap = null;
+    if (ev && ev.code === 1013) {
+      const hint = $("tapHint");
       hint.classList.add("err");
-      return;
+      hint.textContent = "连接数已满: 调大上限或断开别的连接";
     }
-  } else {
-    bytes = encoder.encode(raw + ($("ckNewline").checked ? "\n" : ""));
-  }
-  if (!bytes.length) return;
-  if (!ws || ws.readyState !== 1) {
-    showClientError(wsRejected ? "WS 被拒: 已达最大客户端数 (1013)" : "WS 未连接, 发送失败");
-    return;
-  }
-  try { ws.send(bytes); } catch (e) { showClientError("WS 发送失败: " + e.message); return; }
-  sendErrUntil = 0;
-  $("inSend").classList.remove("invalid");
-  emitLine(bytes, true);
-  $("inSend").value = "";
-  $("inSend").focus();
+    if (tapWant && drawerId === id) setTimeout(connectTap, 1000);
+  };
+  tap.onerror = () => { if (gen === tapGen) { try { tap && tap.close(); } catch (_) {} } };
+}
+function disconnectTap() {
+  tapWant = false;
+  tapGen++;
+  if (tap) { try { tap.close(); } catch (_) {} tap = null; }
+  setTapStatus("closed");
 }
 
-/* ================= FR-9a 地址自我重启 (仅桌面壳) ================= */
-$("btnRestart").addEventListener("click", async () => {
-  const b = $("btnRestart");
-  const addr = $("inAddr").value.trim();
-  if (!/^[0-9a-fA-F.:]+:[0-9]+$/.test(addr)) {
-    showClientError("地址无效: \"" + addr + "\" (形如 127.0.0.1:8080)");
-    $("inAddr").classList.add("invalid");
-    return;
-  }
-  $("inAddr").classList.remove("invalid");
-  if (b.dataset.armed !== "1") {
-    b.dataset.armed = "1";
-    b.textContent = "确认切换?";
-    b.classList.add("armed");
-    $("restartHint").textContent = "确认后桥切换到新地址; 串口不断, 现有连接将断开需重连";
-    setTimeout(() => {
-      if (b.dataset.armed === "1") {
-        b.dataset.armed = "0";
-        b.textContent = "应用地址";
-        b.classList.remove("armed");
-        $("restartHint").textContent = "桥将切换到新地址; 串口会话与终端历史保留, 现有连接需重连";
-      }
-    }, 3000);
-    return;
-  }
-  b.dataset.armed = "0";
-  b.disabled = true;
-  b.textContent = "重启中…";
-  try {
-    await api("/api/restart", { addr });
-    b.textContent = "旧实例退出中, 新窗口即将打开…";
-    // 本页面所属旧进程将优雅退出; 新实例 (同参数, 新地址) 会打开自己的窗口
-  } catch (e) {
-    b.disabled = false;
-    b.textContent = "应用并重启";
-    showClientError(e.message);
-    poll();
-  }
-});
-
-$("btnCopyCmd").addEventListener("click", async () => {
-  const cmd = $("equivCmd").textContent;
-  try {
-    await navigator.clipboard.writeText(cmd);
-    $("btnCopyCmd").textContent = "已复制";
-  } catch (_) {
-    // WebView2/非安全上下文兜底: 选中文本
-    const r = document.createRange();
-    r.selectNodeContents($("equivCmd"));
-    const sel = getSelection();
-    sel.removeAllRanges();
-    sel.addRange(r);
-    $("btnCopyCmd").textContent = "请 Ctrl+C";
-  }
-  setTimeout(() => { $("btnCopyCmd").textContent = "📋 复制"; }, 1500);
-});
-
-/* ================= 事件绑定 ================= */
-$("btnScan").addEventListener("click", scanPorts);
-["inBaud", "inMaxClients", "inAddr"].forEach((id) =>
-  $(id).addEventListener("input", updateEquivCmd)
-);
-["selPort", "selData", "selParity", "selStop"].forEach((id) =>
-  $(id).addEventListener("change", updateEquivCmd)
-);
-$("selFlow").addEventListener("change", () => {
-  flowUserEdited = true; // FIX-17: 用户改动优先于回显
-  updateEquivCmd();
-});
-$("btnOpen").addEventListener("click", openPort);
-$("btnClose").addEventListener("click", closePort);
-$("btnClear").addEventListener("click", clearTerm);
-$("btnPause").addEventListener("click", () => {
-  paused = !paused;
-  $("btnPause").textContent = paused ? "恢复滚动" : "暂停滚动";
-  $("btnPause").classList.toggle("active", paused);
-});
-$("btnTs").addEventListener("click", () => {
-  showTs = !showTs;
-  $("btnTs").classList.toggle("active", showTs);
-  rebuildTerm(); // FIX-6: 时间戳开关即时重放
-});
-$("viewAscii").addEventListener("click", () => { viewMode = "ascii"; toggleSeg("viewAscii", "viewHex"); rebuildTerm(); });
-$("viewHex").addEventListener("click", () => { viewMode = "hex"; toggleSeg("viewHex", "viewAscii"); rebuildTerm(); });
-$("sendText").addEventListener("click", () => { sendMode = "text"; toggleSeg("sendText", "sendHex"); updatePlaceholder(); poll(); });
-$("sendHex").addEventListener("click", () => { sendMode = "hex"; toggleSeg("sendHex", "sendText"); updatePlaceholder(); poll(); });
-$("inSend").addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); doSend(); } });
-$("btnSend").addEventListener("click", doSend);
-$("inBaud").addEventListener("input", () => $("inBaud").classList.remove("invalid"));
-$("inSend").addEventListener("input", () => $("inSend").classList.remove("invalid"));
-
-function toggleSeg(onId, offId) {
-  $(onId).classList.add("active");
-  $(offId).classList.remove("active");
-}
-function updatePlaceholder() {
-  $("inSend").placeholder = sendMode === "hex" ? "HEX 字节, 如: AA BB 01" : "输入内容, 回车发送";
-}
-
-/* ================= 退出 (FR-4⑤ / ADR-8) =================
-   与托盘「退出」完全同一优雅停机序列 (POST /api/shutdown → watch → Close →
-   stop_active → Stopped → 进程退出); 两段确认防误触, 确认窗 3s。 */
+/* ================= 退出程序 (仅桌面壳可用) =================
+   与托盘「退出」同一停机序列; 两段确认防误触。 */
+$("btnQuit").disabled = !IS_SHELL;
+if (!IS_SHELL) $("btnQuit").title = "浏览器里打开的页面退不了程序 — 请在 SerialHub 窗口里点";
 $("btnQuit").addEventListener("click", async () => {
   const b = $("btnQuit");
   if (b.dataset.armed !== "1") {
     b.dataset.armed = "1";
     b.textContent = "确认退出?";
     b.classList.add("armed");
+    notice("所有桥会停止, 已连的网页会断开。串口和设备不受影响。再点一次确认。", "err");
     setTimeout(() => {
       if (b.dataset.armed === "1") {
         b.dataset.armed = "0";
@@ -870,19 +1274,57 @@ $("btnQuit").addEventListener("click", async () => {
     return;
   }
   b.dataset.armed = "0";
-  quitBusy = true; // FIX-20: applyStatus 不再重置按钮
   b.disabled = true;
   b.textContent = "正在退出…";
   try { await fetch("/api/shutdown", { method: "POST" }); } catch (_) {}
-  // 服务优雅停机中, 页面随进程一起结束, 无需恢复 UI
 });
 
+/* ================= 事件绑定 ================= */
+$("btnNew").addEventListener("click", openNew);
+$("btnNew2").addEventListener("click", openNew);
+$("btnCreate").addEventListener("click", createBridge);
+$("btnCancelNew").addEventListener("click", () => dlgNew.close());
+$("btnDlgX").addEventListener("click", () => dlgNew.close());
+dlgNew.addEventListener("close", () => dlgErr(null));
+dlgNew.addEventListener("cancel", () => dlgNew.close());
+$("btnNpScan").addEventListener("click", () => scanInto($("npPort")));
+["npBaud", "npListen"].forEach((id) => $(id).addEventListener("input", () => $(id).classList.remove("invalid")));
+["npName", "npBaud", "npListen"].forEach((id) => $(id).addEventListener("input", () => npFieldErr(null, null)));
+$("npPort").addEventListener("change", () => npFieldErr(null, null));
+$("npName").addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); createBridge(); } });
+
+$("btnCfScan").addEventListener("click", () => scanInto($("cfPort")));
+$("btnCfSave").addEventListener("click", saveCfg);
+["cfBaud", "cfListen"].forEach((id) => $(id).addEventListener("input", () => { $(id).classList.remove("invalid"); updateCfDerived(); }));
+["cfData", "cfParity", "cfStop", "cfFlow", "cfMax", "cfPort"].forEach((id) => $(id).addEventListener("change", updateCfDerived));
+$("btnCfCopyCmd").addEventListener("click", () => copyText($("cfEquiv").textContent, $("btnCfCopyCmd"), "📋 复制"));
+$("btnCfCopyUrl").addEventListener("click", () => copyText($("cfDataUrl").textContent, $("btnCfCopyUrl")));
+
+$("btnCopyUrl").addEventListener("click", () => copyText($("consoleUrl").textContent, $("btnCopyUrl")));
+$("btnDrCopyUrl").addEventListener("click", () => copyText($("drDataUrl").textContent, $("btnDrCopyUrl")));
+
+$("btnClear").addEventListener("click", clearTerm);
+$("btnPause").addEventListener("click", () => {
+  paused = !paused;
+  $("btnPause").textContent = paused ? "恢复滚动" : "暂停滚动";
+  $("btnPause").classList.toggle("active", paused);
+});
+$("btnTs").addEventListener("click", () => {
+  showTs = !showTs;
+  $("btnTs").classList.toggle("active", showTs);
+  rebuildTerm();
+});
+$("viewAscii").addEventListener("click", () => { viewMode = "ascii"; toggleSeg("viewAscii", "viewHex"); rebuildTerm(); });
+$("viewHex").addEventListener("click", () => { viewMode = "hex"; toggleSeg("viewHex", "viewAscii"); rebuildTerm(); });
+function toggleSeg(onId, offId) {
+  $(onId).classList.add("active");
+  $(offId).classList.remove("active");
+}
+
 /* ================= 启动 ================= */
-setBadge($("wsBadge"), $("wsBadgeText"), "closed");
+$("consoleUrl").textContent = location.protocol + "//" + location.host;
 poll();
-setInterval(poll, 500);
-connectWs();
-scanPorts();
+setInterval(poll, POLL_MS);
 </script>
 </body>
 </html>

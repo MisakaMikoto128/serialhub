@@ -21,7 +21,9 @@ use crate::hub::{HubState, Phase};
 use crate::serial::PortCtx;
 use crate::supervisor::{self, HubCmd};
 
-/// GUI/headless 都需要的启动参数 (由 cli::Cli 派生, 见 Cli::startup)。
+/// GUI/headless 都需要的启动参数 (由 cli::Cli 派生)。
+/// Sprint 4 起生产路径走 fleet::ManagerStartup; 本结构仅被 legacy 单桥装配与测试使用。
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub struct Startup {
     pub cfg: SerialConfig,
@@ -49,6 +51,11 @@ pub type OnEvent = Arc<dyn Fn(ServiceEvent) + Send + Sync>;
 /// cmd 通道由调用方创建: GUI 模式下托盘菜单 (主线程) 要直接往里发指令。
 /// shutdown_tx 是唯一停机开关 (ADR-8): 托盘「退出」、`POST /api/shutdown` 都发它,
 /// run_service 内部统一转成优雅停机序列 —— 只此一条路径, 不允许第二种停机写法。
+///
+/// Sprint 4 起 headless/GUI 生产路径已切到 fleet::run_manager (多桥管理器);
+/// 本 legacy 单桥装配保留 —— 7 项单测覆盖停机/换绑/WS 限额/自我重启语义,
+/// 其内部件 (HubState/PortCtx/supervisor/api client_loop) 仍是管理器复用的基础。
+#[cfg_attr(not(test), allow(dead_code))]
 pub async fn run_service(
     su: Startup,
     cmd_tx: mpsc::UnboundedSender<HubCmd>,
@@ -70,7 +77,12 @@ pub async fn run_service(
     // watch 接收端必须在 Ready 事件之前创建 —— 否则 Ready 后立刻到达的停机指令
     // (测试/UI 竞态) 会因接收端不存在而 SendError; 且 watch 语义是"晚订阅的 changed()
     // 以订阅时值为基线", 晚订阅会漏看已发生的停机变更。
+    // main_sd (停机主等待) 与 serve_sd (首轮 axum 优雅停机) 都在此订阅 —— serve_sd
+    // 曾在 serve 循环内才创建, Ready→subscribe 之间到达的停机会被 serve 任务漏看,
+    // 导致优雅停机宽限超时 (qa-sprint4-regression, 该竞态会以 exit(0) 杀死测试进程)。
     let mut main_sd = shutdown_tx.subscribe();
+    let mut first_serve_sd: Option<tokio::sync::watch::Receiver<bool>> =
+        Some(shutdown_tx.subscribe());
 
     // 1) 绑定: FR-9a 交接需要 —— bind 失败按 250ms 重试至 <=2s (等旧实例优雅退出),
     //    仍失败按 FR-8 报"端口被占用" (不开串口、不进服务循环)。
@@ -144,9 +156,10 @@ pub async fn run_service(
             }
         });
     }
-    // serve 句柄放循环外: 换址循环 continue 后它被新一轮替换, 真停机时交给 finalize
-    #[allow(unused_assignments)] // None 只在换址前理论上可见, 循环首行即被覆盖
-    let mut serve: Option<tokio::task::JoinHandle<Result<Option<()>, std::io::Error>>> = None;
+    // serve 循环退出路径必须区分, 防止 JoinHandle 双重 poll (qa-sprint4-regression):
+    // - main_sd 先到: handle 未被 select 消费 → 交 finalize 宽限等待一次;
+    // - serve 臂先到: 结果已在此消费 (换址轮继续 / 自行结束退出), finalize 不再 await。
+    let mut done_handle: Option<tokio::task::JoinHandle<Result<Option<()>, std::io::Error>>> = None;
     loop {
         // rebind 槽每轮新建 (上一轮消费后即弃)
         let round_rebind: Arc<std::sync::Mutex<Option<String>>> =
@@ -158,9 +171,13 @@ pub async fn run_service(
             restart_to: round_rebind.clone(),
             index: include_str!("../ui/index.html"),
         };
-        let mut serve_sd = shutdown_tx.subscribe();
+        // 首轮用 Ready 前订阅好的接收端 (无晚订阅竞态); 换址轮重新订阅
+        // (换址是主动行为, 停机竞窗与基线行为一致)。
+        let mut serve_sd = first_serve_sd
+            .take()
+            .unwrap_or_else(|| shutdown_tx.subscribe());
         let rebind_watcher = round_rebind.clone();
-        let handle = tokio::spawn(async move {
+        let mut handle = tokio::spawn(async move {
             // 优雅停机只听 watch (Ctrl-C 已在别处汇入同一条 watch)
             let shutdown = async move {
                 let _ = serve_sd.changed().await;
@@ -180,21 +197,28 @@ pub async fn run_service(
                 _ = rebinding => { Ok(Some(())) }          // 换址请求: 正常退出 serve
             }
         });
-        serve = Some(handle);
 
-        // 5) 主等待: watch 停机 (含 Ctrl-C) / 换址
-        let rebind_req = tokio::select! {
-            _ = main_sd.changed() => None,       // 托盘退出 / POST /api/shutdown / Ctrl-C → 真停机
-            r = serve.as_mut().expect("serve 句柄应在每轮循环开头就位") => match r {
-                Ok(Ok(Some(()))) => Some(()),    // 换址: 退出 serve 循环, 走原地换绑
-                Ok(Ok(None)) => None,            // serve 自行结束 (异常), 按停机处理
-                Ok(Err(e)) => return Err(format!("HTTP 服务错误: {e}")),
-                Err(e) => return Err(format!("HTTP 服务任务异常: {e}")),
-            },
-        };
-        if let Some(()) = rebind_req {
-            let new_addr = rebind_to.lock().unwrap().take().or_else(|| round_rebind.lock().unwrap().take());
-            if let Some(new_addr) = new_addr {
+        let mut serve_out: Option<
+            Result<Result<Option<()>, std::io::Error>, tokio::task::JoinError>,
+        > = None;
+        let mut shutdown_seen = false;
+        tokio::select! {
+            _ = main_sd.changed() => shutdown_seen = true, // 托盘退出 / POST /api/shutdown / Ctrl-C → 真停机
+            r = &mut handle => serve_out = Some(r),
+        }
+        if shutdown_seen {
+            done_handle = Some(handle);
+            break; // 真停机 (handle 由 finalize 宽限等待)
+        }
+        match serve_out.expect("serve 臂获胜时必有结果") {
+            Ok(Ok(Some(()))) => {
+                // 换址请求: handle 已消费, 原地换绑后继续下一轮
+                let new_addr = rebind_to
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .or_else(|| round_rebind.lock().unwrap().take());
+                let Some(new_addr) = new_addr else { break };
                 // 串口面不动 —— 只换 TCP 面。旧 serve 任务已在 select 中结束。
                 let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
                 let bound = loop {
@@ -217,19 +241,12 @@ pub async fn run_service(
                 listener = bound;
                 continue; // 回到循环顶部, 用新 listener 重开 serve
             }
+            Ok(Ok(None)) => break, // serve 自行结束 (异常), 按停机处理
+            Ok(Err(e)) => return Err(format!("HTTP 服务错误: {e}")),
+            Err(e) => return Err(format!("HTTP 服务任务异常: {e}")),
         }
-        break; // 真停机
     }
-    // 真停机: 把带换址语义的句柄包回 finalize 期望的形状 (内层 Option 已无意义)
-    let handle = serve.expect("serve 句柄应在循环中至少创建一次");
-    let serve: tokio::task::JoinHandle<Result<(), std::io::Error>> = tokio::spawn(async move {
-        match handle.await {
-            Ok(Ok(_)) => Ok(()),
-            Ok(Err(e)) => Err(e),
-            Err(e) => Err(std::io::Error::other(e.to_string())),
-        }
-    });
-    finalize_shutdown(cmd_tx, ctx, serve, on_event, SHUTDOWN_GRACE, true, rebind_to).await
+    finalize_shutdown(cmd_tx, ctx, done_handle, on_event, SHUTDOWN_GRACE, true, rebind_to).await
 }
 
 /// 停机宽限 (qa-sprint2-fix): watch 触发后 250ms 保证串口线程退出 (COM 释放优先),
@@ -238,10 +255,11 @@ pub async fn run_service(
 const SHUTDOWN_GRACE: Duration = Duration::from_millis(1250);
 const SERIAL_THREAD_DRAIN: Duration = Duration::from_millis(250);
 
+#[cfg_attr(not(test), allow(dead_code))]
 async fn finalize_shutdown(
     cmd_tx: mpsc::UnboundedSender<HubCmd>,
     ctx: PortCtx,
-    serve: tokio::task::JoinHandle<Result<(), std::io::Error>>,
+    serve: Option<tokio::task::JoinHandle<Result<Option<()>, std::io::Error>>>,
     on_event: Option<OnEvent>,
     grace: Duration,
     hard_exit: bool,
@@ -259,19 +277,26 @@ async fn finalize_shutdown(
             eprintln!("serialhub: 自我重启拉起新实例失败: {e} (本进程仍将退出)");
         }
     }
-    // axum 有界宽限
-    let outcome = tokio::time::timeout(grace, serve).await;
-    let done = matches!(&outcome, Ok(Ok(Ok(()))));
-    let result = match outcome {
-        Ok(Ok(Ok(()))) => Ok(()),
-        Ok(Ok(Err(e))) => Err(format!("HTTP 服务异常退出: {e}")),
-        Ok(Err(e)) => Err(format!("HTTP 服务任务异常: {e:?}")),
-        Err(_) => {
-            if hard_exit {
-                std::process::exit(0); // 兜底: 串口已停, 进程立即结束 (COM 已释放)
-            }
-            Err("优雅停机超时: 有界宽限耗尽仍有连接未退".into())
+    // axum 有界宽限 (serve 已在循环内自行结束 → 无需等待)
+    // inner: Ok(Some(())) = 并发换址请求 (停机优先); Ok(None) = 优雅停机完成
+    let (done, result) = match serve {
+        Some(serve) => {
+            let outcome = tokio::time::timeout(grace, serve).await;
+            let done = matches!(&outcome, Ok(Ok(Ok(_))));
+            let result = match outcome {
+                Ok(Ok(Ok(_))) => Ok(()),
+                Ok(Ok(Err(e))) => Err(format!("HTTP 服务异常退出: {e}")),
+                Ok(Err(e)) => Err(format!("HTTP 服务任务异常: {e:?}")),
+                Err(_) => {
+                    if hard_exit {
+                        std::process::exit(0); // 兜底: 串口已停, 进程立即结束 (COM 已释放)
+                    }
+                    Err("优雅停机超时: 有界宽限耗尽仍有连接未退".into())
+                }
+            };
+            (done, result)
         }
+        None => (true, Ok(())),
     };
     if done {
         if let Some(cb) = &on_event {
@@ -283,6 +308,7 @@ async fn finalize_shutdown(
 
 /// FR-9a: 以"当前配置 + 替换 addr"的等价 CLI 参数 DETACHED 拉起同 exe 新实例。
 /// 新实例对 bind 做 <=2s 重试 (旧实例退出即交接成功)。
+#[cfg_attr(not(test), allow(dead_code))]
 fn respawn_args(new_addr: &str, cfg: &SerialConfig, max_clients: u32) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "--addr".into(),
@@ -304,6 +330,7 @@ fn respawn_args(new_addr: &str, cfg: &SerialConfig, max_clients: u32) -> Vec<Str
     args
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn spawn_respawn(new_addr: &str, cfg: &SerialConfig, max_clients: u32) -> Result<(), String> {
     let exe = std::env::current_exe()
         .map_err(|e| format!("定位当前可执行文件失败: {e}"))?;
@@ -648,15 +675,15 @@ mod tests {
             let _ = ev_tx.send(ev);
         });
         // 永不完成的 serve —— 模拟外部进程挂连接拖死优雅停机
-        let never: tokio::task::JoinHandle<Result<(), std::io::Error>> =
-            tokio::spawn(async { std::future::pending::<Result<(), std::io::Error>>().await });
+        let never: tokio::task::JoinHandle<Result<Option<()>, std::io::Error>> =
+            tokio::spawn(async { std::future::pending::<Result<(), std::io::Error>>().await.map(|_| None) });
 
         let restart_to: Arc<std::sync::Mutex<Option<String>>> =
             Arc::new(std::sync::Mutex::new(None));
         let res = finalize_shutdown(
             cmd_tx,
             ctx,
-            never,
+            Some(never),
             Some(on_event),
             Duration::from_millis(200),
             false, // 测试不 exit 进程; 生产路径 true

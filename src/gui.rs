@@ -24,8 +24,9 @@ use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{TrayIconBuilder, TrayIconEvent};
 
 use crate::cli::Cli;
+use crate::fleet::{run_manager, ManagerStartup};
 use crate::hub::Phase;
-use crate::service::{run_service, ServiceEvent, Startup};
+use crate::service::ServiceEvent;
 use crate::supervisor::HubCmd;
 
 /// 服务 → 事件循环 的用户事件 (经 EventLoopProxy 从后台线程打回主线程)。
@@ -64,8 +65,9 @@ pub fn run_gui(cli: Cli) -> Result<(), String> {
     let service_shutdown_tx = shutdown_tx.clone(); // 托盘留 shutdown_tx, 服务线程拿 clone
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HubCmd>();
     let service_cmd_tx = cmd_tx.clone();
-    let startup: Startup = cli.startup();
-    let port0 = startup.cfg.port.clone(); // 托盘 tooltip 初值 (startup 移入服务线程)
+    // Sprint 4 (FR-10): GUI 同样走多桥管理器 (管理台 = 控制面, 兼容桥承载旧 CLI 参数)
+    let startup: ManagerStartup = ManagerStartup::from_cli(&cli);
+    let port0 = cli.port.clone().unwrap_or_default(); // 托盘 tooltip 初值
     let proxy_for_service = proxy.clone();
     let ready_tx2 = ready_tx.clone();  // 给 on_event (Ready)
     let ready_tx3 = ready_tx.clone();  // 给 block_on 的 Err 回传
@@ -90,7 +92,7 @@ pub fn run_gui(cli: Cli) -> Result<(), String> {
                 };
                 let _ = proxy_for_service.send_event(ue);
             });
-            if let Err(e) = rt.block_on(run_service(startup, service_cmd_tx, cmd_rx, service_shutdown_tx, Some(on_event))) {
+            if let Err(e) = rt.block_on(run_manager(startup, service_cmd_tx, cmd_rx, service_shutdown_tx, Some(on_event))) {
                 // 就绪前失败 (如端口被占用) 必须立即回传主线程; 就绪后失败时 ready 端已关, 发送失败无妨
                 let _ = ready_tx3.send(Err(e));
             }
