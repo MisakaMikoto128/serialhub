@@ -1,0 +1,72 @@
+# SerialHub Release —— 推送 v* tag 触发: 三平台 cargo build --release,
+# 打包 (Windows zip / Linux+macOS tar.gz) 后经 softprops/action-gh-release
+# 上传到该 tag 对应的 GitHub Release。
+#
+# 打包内容统一为: 主二进制 + README.md + LICENSE + NOTICE。
+# macOS 产物为 aarch64 (macos-latest), 未签名/未公证 —— 产物名带 -unsigned 后缀,
+# 用户首次打开需「右键 -> 打开」或在系统设置放行 Gatekeeper。
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: release (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      VER: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # 系统依赖与 CI 完全相同, 理由见 ci.yml 注释
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libudev-dev libgtk-3-dev libwebkit2gtk-4.1-dev libxdo-dev
+
+      - name: cargo build --release
+        run: cargo build --release --locked
+
+      # Windows: zip 内含 serialhub.exe + README.md + LICENSE + NOTICE
+      - name: Package (Windows, zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dir = "dist/serialhub-$env:VER-windows-x86_64"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Copy-Item target/release/serialhub.exe, README.md, LICENSE, NOTICE $dir
+          Compress-Archive -Path $dir -DestinationPath "dist/serialhub-$env:VER-windows-x86_64.zip" -Force
+
+      - name: Package (Linux, tar.gz)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p "dist/serialhub-${VER}-linux-x86_64"
+          cp target/release/serialhub README.md LICENSE NOTICE "dist/serialhub-${VER}-linux-x86_64/"
+          tar -czf "dist/serialhub-${VER}-linux-x86_64.tar.gz" -C dist "serialhub-${VER}-linux-x86_64"
+
+      # macOS: aarch64, 未签名 (产物名 -unsigned 后缀), 用户需绕过 Gatekeeper
+      - name: Package (macOS, tar.gz, unsigned)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p "dist/serialhub-${VER}-macos-aarch64-unsigned"
+          cp target/release/serialhub README.md LICENSE NOTICE "dist/serialhub-${VER}-macos-aarch64-unsigned/"
+          tar -czf "dist/serialhub-${VER}-macos-aarch64-unsigned.tar.gz" -C dist "serialhub-${VER}-macos-aarch64-unsigned"
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

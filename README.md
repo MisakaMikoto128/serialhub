@@ -1,85 +1,116 @@
-# SerialHub — 串口 ↔ WebSocket 桥接, 做成成熟产品
+# SerialHub — 串口 ⇄ WebSocket 桥接管理器
 
-> 把 `serial_bridge.py` 那类一次性脚本做成正经工具: 跨平台单二进制 + 内嵌 Web 控制台,
-> 四个硬需求全占 —— 原始字节双向、多客户端广播、掉线自动重开、串口参数全可配 (8N1/8N2/…)。
+一句话: 把串口设备变成一条 WebSocket 字节管道, 浏览器页面和脚本直接读写原始字节。
 
-## 快速开始 (Sprint 1 完成后)
+三行定位:
+
+- **多桥管理台**: 固定管理网址, 建桥/启停/改配/删除全在网页里, 重启自动恢复;
+- **原始字节双向**: WS 纯二进制帧, 多客户端广播, 掉线自动重连 (每桥可关);
+- **单二进制**: 跨平台单文件, 内嵌 Web 控制台, 桌面客户端 + CLI 双形态。
+
+## 特性
+
+| 特性 | 说明 |
+|---|---|
+| 多桥管理台 | 同时运行多座桥; 新建/启动/停止/改配/删除; `fleet.json` 持久化, 进程重启自动恢复全部桥 |
+| 可视化 | 每桥流程图 (串口 ⇄ 桥 ⇄ 网址, 有流量时点亮) + 四态徽章 + 速率火花线 + 收发字节/连接数/错误/时长 |
+| 自动重连 | 串口拔出/重枚举按 1s 节奏自动重连, 重试次数实时可见, 恢复后客户端零动作续传; 每桥可独立开关 |
+| 串口全参数 | 110~2,000,000 波特, 数据位 7/8, 校验 N/E/O, 停止位 1/2, 流控 none/rtscts/xonxoff |
+| 桌面客户端 | 原生窗口 + 系统托盘 (关窗即退到后台); `--headless` 纯 CLI 模式供脚本与 CI |
+| CLI ⇄ UI 对等 | 每个配置项两端都有; 控制台一键复制与当前配置等价的启动命令 |
+
+## 快速开始
+
+从 [Releases](../../releases) 下载对应平台的压缩包解压, 或源码安装:
 
 ```bash
-cargo run --release -- --port COM1 --baud 115200 --config 8N2 --addr 127.0.0.1:8080
-# 浏览器打开 http://127.0.0.1:8080 —— Web 控制台即用
+cargo install --path .
 ```
 
-## 桌面形态 (GUI, 默认)
+三行命令上手 (旧单桥参数 = 自动建一座桥并启动):
 
-从 Sprint 2 起**默认以桌面客户端启动**: 原生窗口 (内嵌同一套 Web 控制台, 不做第二套界面)
-+ 系统托盘图标。双击 `serialhub.exe` 即用, 无控制台残留。
-
-- **关窗 = 退到后台**: 点窗口 X 只是隐藏窗口, 桥继续收发; 再点托盘图标 (左键) 恢复窗口,
-  终端历史原样保留。
-- **托盘图标**: 随状态机变色 —— 绿=open / 琥珀=opening·retry / 灰=closed; 悬停 tooltip
-  为静态文案 `SerialHub · <端口> · 状态见控制台` (相位看图标颜色与控制台徽章);
-  **左键单击 = 恢复主窗口**, 右键 = 菜单。
-- **托盘菜单**: 显示主窗口 / 在浏览器打开控制台 / 打开串口 / 关闭串口 / 退出。
-- **退出程序的三种方式**: ① 托盘菜单「退出」; ② 控制台页头「退出程序」按钮 (两段确认,
-  走 `POST /api/shutdown`, 与托盘同一优雅停机序列); ③ 任务管理器 (兜底, 不保证串口
-  优雅释放)。前两种会先停串口线程、释放 COM 再退出。
-- **托盘可见性**: Win11 默认把新图标收进溢出区 (`^` 展开)。建议在 任务栏设置 →
-  其它系统托盘图标 里把 SerialHub 打开为"任务栏显示"。
-- **关窗气泡**: 首次关窗会弹一次"已退到系统托盘"气泡; 系统**勿扰/专注助手**开启时气泡
-  可能被吞 (UX 实测) —— 没看到气泡不代表程序退出, 任务栏托盘 (含溢出区) 里找圆点图标。
-- **`--headless`**: 旧行为 —— 纯 CLI 前台进程, 无窗口无托盘, Ctrl-C 或 `POST /api/shutdown`
-  退出。自动化测试 (pytest 夹具)、CI、脚本场景专用; headless 运行时无任何 GUI 依赖 (PLAT-4)。
-- **启动失败**: 端口被占用时 GUI 模式弹系统错误框 (含"端口被占用"字样) 后退出, stderr 亦输出;
-  headless 仅 stderr。
-
-## 配置对照表 (CLI ↔ 控制台 UI, FR-9d)
-
-界面上的每个配置项都有 CLI 对应物, 反之亦然; 控制台页头下方会实时显示与当前配置
-**完全等价的启动命令** (📋 一键复制)。
-
-| CLI 参数 | UI 位置 | 说明 |
-|---|---|---|
-| `--port COM1` | 连接面板 · 串口 (下拉 + 扫描) | 串口名; 启动后也可在控制台打开/关闭 |
-| `--baud 115200` | 连接面板 · 波特率 | 110 ~ 2000000 |
-| `--config 8N2` | 连接面板 · 数据位/校验/停止位 | 组合式: 7/8 + N/E/O + 1/2 |
-| `--max-clients 0` | 连接面板 · 最大客户端数 | 0 = 不限; 超限新连接以 close 1013 拒绝 |
-| `--flow none` | 连接面板 · 流控 | none / rtscts / xonxoff (ADR-10) |
-| `--addr 127.0.0.1:8080` | 连接面板 · 地址 + 「应用并重启」 | GUI 模式自我重启 (FR-9a); **headless 模式改地址需重启进程** |
-| `--gui` / `--headless` | (启动方式) | 默认 GUI (窗口+托盘); `--headless` 纯 CLI 无窗口 (QA/脚本) |
-| `--no-open` | (启动参数) | 启动时不自动打开串口 (运行时用控制台「打开/关闭」) |
-| `--list-ports` | 连接面板 · 「扫描」按钮 | 列出本机串口 |
-
-## 协议与语义须知 (给接 `/ws` 的上位机作者)
-
-- `/ws` 只传**原始二进制帧**, 无任何包帧协议; 控制面 (`/api/*`, JSON) 与数据面彻底分离。
-- **WS 消息边界 ≠ 串口帧边界** (ADR-6⑤): 下行 (串口→WS) 按串口读块广播, 设备一次 `write`
-  可能被拆成多条 WS 消息, 多次 `write` 也可能被合并成一条; 上行同理经 FIFO 队列串行写串口。
-  **页面侧协议栈必须自己容忍任意分块**, 不要假设"一条 WS 消息 = 一帧"。
-- **慢客户端丢旧帧策略**: 每个客户端的下行走 broadcast 环形缓冲 (1024 条); 消费速度跟不上时
-  该客户端会被判 Lagged, **丢弃最旧的帧以保住连接与串口读循环** —— 不反压、不踢人。
-  高波特率 + 慢客户端 = 主动丢数据, 请确保消费端处理能力跟得上。
-- 勿暴露到不可信网络 (TLS/鉴权为 v1 明确不做, 见 spec §6)。
-
-## 它解决什么
-
-浏览器自动化测试无法授权 Web Serial, 所以自研上位机 (tools/webapp) 的联机测试必须走一条
-**WS 字节管道**。市面没有满足全部四条硬需求的现成品 (调研结论见 `docs/product/spec.md` §调研),
-本项目把它产品化: 给嵌入式/工控开发者的通用串口桥。
-
-## 团队与回路
-
-本项目由 **多智能体团队** 迭代 (详见 `docs/team/charter.md`):
-
-```
-产品待办池 backlog ──▶ 开发 Dev ──▶ 测试 QA ──▶ 体验官 UX ──▶ 反馈回流待办池
-        ▲                                              │
-        └──────────────── 架构师 (编排/验收) ◀─────────┘
+```bash
+serialhub --port COM1 --baud 115200 --config 8N2 --addr 127.0.0.1:8080
+# 浏览器打开 http://127.0.0.1:8080 —— 管理台即用
+# 程序接入: ws://127.0.0.1:8081/ws (本桥数据端点, 纯二进制)
 ```
 
-- **架构师/编排**: 定规格、派工、验收、更新待办池
-- **开发 Dev**: 实现与修复 (`goal-dev.md` 为其常驻指令)
-- **测试 QA**: COM1↔COM2 虚拟对一致性套件 + 报告 (`goal-qa.md`)
-- **体验官 UX**: Playwright 以真实用户姿态使用并产出反馈报告 (`goal-ux.md`)
+桌面客户端双击即用 (默认 GUI: 原生窗口 + 托盘); 纯命令行场景加 `--headless`。
 
-新会话接手: 先读 `AGENTS.md`, 再读 `docs/team/backlog.md` 找当前 Sprint。
+## 截图
+
+| | |
+|---|---|
+| ![管理台仪表盘](docs/images/dashboard.png) | ![新建桥](docs/images/create-bridge.png) |
+| ![每桥流程图与统计](docs/images/flow-stats.png) | ![桥抽屉](docs/images/bridge-drawer.png) |
+| ![系统托盘](docs/images/tray.png) | ![命令行](docs/images/cli.png) |
+
+## 程序接入
+
+每座桥的数据端点为 `ws://<桥网址>/ws`, 只传**原始二进制帧** (10 进制字节), 无包帧协议。
+两条语义务必知道:
+
+- **WS 消息边界 ≠ 串口帧边界**: 设备一次写入可能被拆成多条消息, 多次写入可能被合并;
+  页面侧协议栈自己容忍任意分块。
+- **慢客户端丢旧帧**: 下行环形缓冲 1024 条, 消费跟不上时丢最旧帧保连接 (Lagged),
+  不反压、不踢人 —— 高波特率下请确保消费端跟得上。
+
+Python 示例 (`pip install websockets`):
+
+```python
+import asyncio, websockets
+
+async def main():
+    async with websockets.connect("ws://127.0.0.1:8081/ws") as ws:
+        await ws.send(b"\x01\x03\x00\x00")   # 上行: 写入串口
+        while True:
+            data = await ws.recv()           # 下行: 串口收到的原始字节
+            print(repr(data))
+
+asyncio.run(main())
+```
+
+控制面走 `/api/*` (JSON), 与数据面彻底分离, 端点表见[用户手册 API 摘要](docs/manual/用户使用手册.md#八api-摘要)。
+
+## 文档
+
+- [用户使用手册](docs/manual/用户使用手册.md) — 安装、五分钟上手、界面详解、命令行参考、程序接入、故障排查
+- [API 摘要](docs/manual/用户使用手册.md#八api-摘要) — `/api/fleet` 系与 `/api/status` 端点表
+- [更新日志](CHANGELOG.md)
+- [产品规格](docs/product/spec.md) · [安全策略](SECURITY.md)
+
+## 开发
+
+```bash
+cargo test                      # Rust 单元测试 (56 条)
+python -m pytest tests/ -v      # 集成一致性套件 (COM1↔COM2 虚拟对, 40 条)
+```
+
+本项目由一个**多智能体团队**迭代 (架构师编排 → Dev 开发 → QA 测试 → UX 体验官, 反馈回流待办池);
+人类贡献者走同样的回路, 见 [CONTRIBUTING.md](CONTRIBUTING.md) 与 [docs/team/](docs/team/)。
+
+## 许可证
+
+[Apache-2.0](LICENSE)。
+
+## About (English)
+
+SerialHub is a serial-port ⇄ WebSocket **bridge manager**. It exposes each serial
+port as a WebSocket byte pipe: one fixed management URL hosts a built-in web
+console where you create, start, stop and reconfigure any number of bridges;
+each bridge gets its own stable `ws://…/ws` endpoint carrying raw binary frames
+in both directions, broadcast to every connected client.
+
+- **Multi-bridge dashboard** — flow diagram, state badges, throughput sparklines,
+  connection counters; configuration persisted and restored across restarts.
+- **Hands-free reconnect** — unplugged/renumerated ports are retried every second
+  (per-bridge switch); clients keep their connection and resume without action.
+- **Full serial parameters** — 110~2,000,000 baud, 7/8 data bits, N/E/O parity,
+  1/2 stop bits, none/rtscts/xonxoff flow control; CLI and UI fully equivalent.
+- **Desktop client or headless** — native window with tray (close-to-tray), or
+  `--headless` for scripts and CI.
+
+Grab a prebuilt binary from [Releases](../../releases) or run
+`cargo install --path .`, then open `http://127.0.0.1:8080`. Docs are in
+Chinese; see the [user manual](docs/manual/用户使用手册.md) and
+[CHANGELOG](CHANGELOG.md). Licensed under [Apache-2.0](LICENSE).
