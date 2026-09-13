@@ -235,9 +235,13 @@ pub fn run_gui(cli: Cli) -> Result<(), String> {
                 ..
             } => {
                 // 关窗 = 退到托盘, 桥继续跑 (FR-8); 首次气泡提示一次
+                // (气泡 = Win32 Shell_NotifyIconW 特性; tray.window_handle() 是
+                //  tray-icon 的 Windows 专属扩展方法, CI 三平台要求非 Windows
+                //  仅可编译 —— 整个调用随 balloon 一起平台门控, PLAT-4)
                 window.set_visible(false);
                 if !hidden_notified {
                     hidden_notified = true;
+                    #[cfg(windows)]
                     balloon(
                         tray.window_handle(),
                         "SerialHub",
@@ -328,8 +332,7 @@ fn balloon(hwnd: windows_sys::Win32::Foundation::HWND, title: &str, text: &str) 
     }
 }
 
-#[cfg(not(windows))]
-fn balloon(_hwnd: (), _title: &str, _text: &str) {}
+// (balloon 无非 Windows 空壳: 唯一调用点已随 tray.window_handle() 一起平台门控)
 
 /// FIX-14 (ADR-8): GUI 早期失败 (端口被占用/初始化失败) 用系统 MessageBox 明示 ——
 /// 双击启动无控制台, stderr 不可见; 这是错误对话框, 允许抢占注意力 (与主窗口不同)。
