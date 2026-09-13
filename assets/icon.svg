@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="256" height="256">
+  <!-- SerialHub 主标 · 母题「桥 + 枢纽」: 一条连续绿拱桥落在两只深灰端口上, 拱心下方的深绿圆点即枢纽 -->
+  <!-- 32px 网格绘制, 5 个形状, 16px 下仍可辨: 浅底 + 拱 + 双墩 -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f8fbf9"/>
+      <stop offset="1" stop-color="#e2eae5"/>
+    </linearGradient>
+    <linearGradient id="bridge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2f9e5f"/>
+      <stop offset="1" stop-color="#1f7a47"/>
+    </linearGradient>
+  </defs>
+  <!-- 1/5 瓷片底 -->
+  <rect x="1.5" y="1.5" width="29" height="29" rx="7.2" fill="url(#tile)" stroke="#c9d4cd" stroke-width="0.7"/>
+  <!-- 2,3/5 端口墩 (DB9 抽象) -->
+  <rect x="4" y="21" width="8" height="7" rx="2.2" fill="#37424a"/>
+  <rect x="20" y="21" width="8" height="7" rx="2.2" fill="#37424a"/>
+  <!-- 4/5 桥拱: 圆头端点正好落在端口顶面 -->
+  <path d="M8 21 A8.962 8.962 0 1 1 24 21" fill="none" stroke="url(#bridge)" stroke-width="3.8" stroke-linecap="round"/>
+  <!-- 5/5 枢纽点 (拱心下方) -->
+  <circle cx="16" cy="14.6" r="2.4" fill="#1f7a47"/>
+</svg>

@@ -14,7 +14,7 @@
 use axum::extract::rejection::JsonRejection;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use axum::response::{Html, IntoResponse, Response};
@@ -52,6 +52,7 @@ pub fn router(app: App) -> Router {
         .route("/api/close", post(close))
         .route("/api/shutdown", post(shutdown))
         .route("/api/restart", post(restart))
+        .route("/favicon.svg", get(favicon)) // FR-15: 网页收藏夹图标
         .route("/ws", get(ws_upgrade))
         .with_state(app)
 }
@@ -60,6 +61,19 @@ pub fn router(app: App) -> Router {
 
 async fn index(State(app): State<App>) -> Html<&'static str> {
     Html(app.index)
+}
+
+/// FR-15: 网页 favicon (SVG 文本, 资产缺失走 icons 兜底)。
+pub(crate) fn favicon_core() -> Response {
+    (
+        [(header::CONTENT_TYPE, "image/svg+xml")],
+        crate::icons::favicon_svg(),
+    )
+        .into_response()
+}
+
+async fn favicon(State(_app): State<App>) -> Response {
+    favicon_core()
 }
 
 /// GET /api/status 核心 (管理台兼容分发复用)。

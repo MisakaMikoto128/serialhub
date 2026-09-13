@@ -3,7 +3,7 @@
 //! 架构 (文字稿):
 //!
 //! ```text
-//!                  控制面 (管理台, 固定 --addr, 永远可达, FR-10a)
+//!                  控制面 (管理台, --addr / fleet [manager] addr, 永远可达, FR-10a/13)
 //!    GET/POST /api/fleet ...  ──────────────┐
 //!    旧 /api/status /api/config /ws (兼容分发)│
 //!                  ┌────────────────────────┘
@@ -308,6 +308,9 @@ pub struct BridgeManager {
     bridges: RwLock<BTreeMap<String, Arc<Bridge>>>,
     /// fleet.json 路径; None = 持久化关闭 (--no-fleet)。
     pub fleet_path: Option<PathBuf>,
+    /// FR-13: 控制面 (管理台) 当前地址 —— 随启动绑定与每次换址更新,
+    /// persist 时写入 fleet.json 顶层 [manager] 段 (重启恢复)。
+    manager_addr: Mutex<Option<SocketAddr>>,
     /// 恢复 fleet 期间抑制 persist (避免把"暂时绑不上"的桥从清单里抹掉)。
     persist_suppressed: AtomicBool,
     next_id: AtomicU64,
@@ -318,9 +321,19 @@ impl BridgeManager {
         Self {
             bridges: RwLock::new(BTreeMap::new()),
             fleet_path,
+            manager_addr: Mutex::new(None),
             persist_suppressed: AtomicBool::new(false),
             next_id: AtomicU64::new(1),
         }
+    }
+
+    /// FR-13: 登记控制面当前地址 (启动绑定后与每次换址成功后调用)。
+    pub fn set_manager_addr(&self, a: SocketAddr) {
+        *lock_mutex(&self.manager_addr) = Some(a);
+    }
+
+    pub fn manager_addr(&self) -> Option<SocketAddr> {
+        *lock_mutex(&self.manager_addr)
     }
 
     pub fn snapshot(&self) -> Vec<Arc<Bridge>> {
@@ -514,13 +527,15 @@ impl BridgeManager {
     }
 
     /// fleet.json 变更即写 (FR-10b)。持久化关闭 (--no-fleet) 或恢复期间 = 空操作。
+    /// FR-13: 同时写入顶层 [manager] 段 (控制面地址, set_manager_addr 登记的现值)。
     pub fn persist(&self) {
         if self.persist_suppressed.load(Ordering::Relaxed) {
             return;
         }
         let Some(path) = &self.fleet_path else { return };
         let recs: Vec<FleetBridgeRec> = self.snapshot().iter().map(rec_of_bridge).collect();
-        if let Err(e) = save_fleet(path, &recs) {
+        let manager = self.manager_addr().map(|a| ManagerRec { addr: a.to_string() });
+        if let Err(e) = save_fleet(path, &recs, manager.as_ref()) {
             eprintln!("serialhub: fleet 清单写入失败 ({path:?}): {e}");
         }
     }
@@ -604,14 +619,30 @@ impl SerialRec {
     }
 }
 
+/// FR-13: fleet.json 顶层 [manager] 段 —— 控制面 (管理台) 地址持久化,
+/// 重启恢复 (显式 --addr 优先, 见 run_manager_with)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct ManagerRec {
+    #[serde(default)]
+    pub addr: String,
+}
+
 #[derive(Serialize, Deserialize)]
-struct FleetFile {
+pub(crate) struct FleetFile {
     version: u32,
+    #[serde(default)]
     bridges: Vec<FleetBridgeRec>,
+    /// FR-13: 旧清单无此字段 → default None 兼容; 写出时空段跳过。
+    #[serde(default, rename = "manager", skip_serializing_if = "Option::is_none")]
+    manager: Option<ManagerRec>,
 }
 
 /// 原子写: 临时文件 + 改名覆盖 (进程中途被杀不会留下半截清单)。
-pub(crate) fn save_fleet(path: &Path, bridges: &[FleetBridgeRec]) -> Result<(), String> {
+pub(crate) fn save_fleet(
+    path: &Path,
+    bridges: &[FleetBridgeRec],
+    manager: Option<&ManagerRec>,
+) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         if !dir.as_os_str().is_empty() {
             std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败: {e}"))?;
@@ -620,6 +651,7 @@ pub(crate) fn save_fleet(path: &Path, bridges: &[FleetBridgeRec]) -> Result<(), 
     let body = serde_json::to_string_pretty(&FleetFile {
         version: 1,
         bridges: bridges.to_vec(),
+        manager: manager.cloned(),
     })
     .map_err(|e| format!("序列化失败: {e}"))?;
     let tmp = path.with_extension("json.tmp");
@@ -627,10 +659,15 @@ pub(crate) fn save_fleet(path: &Path, bridges: &[FleetBridgeRec]) -> Result<(), 
     std::fs::rename(&tmp, path).map_err(|e| format!("替换清单失败: {e}"))
 }
 
-pub(crate) fn load_fleet(path: &Path) -> Result<Vec<FleetBridgeRec>, String> {
+/// 整文件读取 (FR-13: 含 [manager] 段)。
+pub(crate) fn load_fleet_file(path: &Path) -> Result<FleetFile, String> {
     let body = std::fs::read_to_string(path).map_err(|e| format!("读取失败: {e}"))?;
-    let file: FleetFile = serde_json::from_str(&body).map_err(|e| format!("解析失败: {e}"))?;
-    Ok(file.bridges)
+    serde_json::from_str(&body).map_err(|e| format!("解析失败: {e}"))
+}
+
+/// 桥记录读取 (旧接口; [manager] 段请走 load_fleet_file)。
+pub(crate) fn load_fleet(path: &Path) -> Result<Vec<FleetBridgeRec>, String> {
+    Ok(load_fleet_file(path)?.bridges)
 }
 
 fn rec_of_bridge(b: &Arc<Bridge>) -> FleetBridgeRec {
@@ -718,8 +755,13 @@ async fn restore_fleet(mgr: &Arc<BridgeManager>) -> usize {
 /// 管理器启动参数 (由 Cli 派生, 见 ManagerStartup::from_cli)。
 #[derive(Debug, Clone)]
 pub struct ManagerStartup {
-    /// 控制面 (管理台) 固定地址, 永远可达 (FR-10a)。
+    /// 控制面 (管理台) 地址 (FR-10a)。FR-13: 非显式给出时可被
+    /// fleet.json [manager] addr 覆盖 (重启恢复, 见 addr_explicit)。
     pub control_addr: SocketAddr,
+    /// FR-13: CLI 是否显式给出 --addr (显式 → 优先于清单恢复值)。
+    pub addr_explicit: bool,
+    /// FR-14: 主题目录; None = exe 旁 themes/ (themes::default_themes_dir)。
+    pub themes_dir: Option<PathBuf>,
     /// CLI 兼容桥参数 (FR-10h); None = 不建 (纯 fleet 模式, 测试用)。
     pub cli_bridge: Option<CliBridgeSpec>,
     /// fleet.json 路径; None = 持久化关闭 (--no-fleet)。
@@ -754,6 +796,8 @@ impl ManagerStartup {
         };
         Self {
             control_addr: cli.addr,
+            addr_explicit: cli.addr_explicit,
+            themes_dir: cli.themes_dir.clone(),
             fleet_path,
             cli_bridge: Some(CliBridgeSpec {
                 name: "CLI".into(),
@@ -844,6 +888,8 @@ struct ControlState {
     shutdown_tx: watch::Sender<bool>,
     restart_to: Arc<Mutex<Option<String>>>,
     index: &'static str,
+    /// FR-14: 主题目录 (每轮 serve 重建 ControlState 时随 mgr 携带)。
+    themes_dir: PathBuf,
 }
 
 fn control_router(cs: ControlState) -> Router {
@@ -860,6 +906,13 @@ fn control_router(cs: ControlState) -> Router {
             patch(fleet_config).post(fleet_config),
         )
         .route("/api/fleet/{id}/tap", get(fleet_tap))
+        // ---- FR-13 管理台设置: 控制面地址原地换绑 (复用 ADR-12 机制) ----
+        .route("/api/manager/addr", post(manager_set_addr))
+        // ---- FR-14 主题插件 ----
+        .route("/api/themes", get(themes_list))
+        .route("/themes/{file}", get(themes_file))
+        // ---- FR-15 网页 favicon ----
+        .route("/favicon.svg", get(control_favicon))
         // ---- 旧单桥端点 (恰一座桥时兼容分发, FR-10h) ----
         .route("/api/status", get(legacy_status))
         .route("/api/ports", get(legacy_ports))
@@ -1145,6 +1198,39 @@ async fn tap_loop(socket: WebSocket, b: Arc<Bridge>) {
     }
 }
 
+// ---- FR-13: 管理台设置 —— 控制面地址原地换绑 ----
+
+/// POST /api/manager/addr {"addr":"ip:port"}: 校验并登记新地址, serve 循环
+/// 检测到登记后退出当前 TCP 面 → 原地重新 bind (失败 2s 重试后回退原地址)。
+/// 校验/登记复用 api::restart_core 同一路径 (ADR-12); 成功受理后:
+/// 持久化 [manager] 段 (重启恢复) + Ready(新地址) 事件 (壳层 webview 跟随)。
+/// 各桥数据面全程不动 (换绑只影响管理台)。
+async fn manager_set_addr(
+    State(cs): State<ControlState>,
+    body: Result<Json<api::RestartReq>, JsonRejection>,
+) -> Response {
+    api::restart_core(&cs.restart_to, body)
+}
+
+// ---- FR-14: 主题插件 ----
+
+/// GET /api/themes: {"themes":[{"name":"light","builtin":true},...]}
+/// (扫主题目录, 文件名去后缀, 字典序)。
+async fn themes_list(State(cs): State<ControlState>) -> Response {
+    Json(json!({ "themes": crate::themes::scan(&cs.themes_dir) })).into_response()
+}
+
+/// GET /themes/<file>.css: 主题静态服务 (路径穿越防护见 themes::resolve)。
+async fn themes_file(State(cs): State<ControlState>, AxumPath(file): AxumPath<String>) -> Response {
+    crate::themes::serve(&cs.themes_dir, &file)
+}
+
+// ---- FR-15: 网页 favicon ----
+
+async fn control_favicon(State(_cs): State<ControlState>) -> Response {
+    api::favicon_core()
+}
+
 // ---- 旧单桥端点兼容分发 (FR-10h) ----
 
 async fn legacy_status(State(cs): State<ControlState>) -> Response {
@@ -1251,8 +1337,19 @@ pub async fn run_manager_with(
     let mut main_sd = shutdown_tx.subscribe();
     let mut first_serve_sd: Option<watch::Receiver<bool>> = Some(shutdown_tx.subscribe());
 
-    // 1) 控制面绑定 (FR-10a: 管理台固定地址, 永远可达; bind 失败重试 ≤2s → 致命)
-    let mut listener = bind_with_retry(su.control_addr, Duration::from_secs(2))
+    // 1) 控制面绑定 (FR-10a: 管理台固定地址, 永远可达; bind 失败重试 ≤2s → 致命)。
+    //    FR-13: fleet.json [manager] addr 持久化恢复 —— 显式 --addr 优先;
+    //    未显式给出且清单里有合法地址 → 用恢复值 (改过端口的用户重启后回到原地址)。
+    let persisted_addr: Option<SocketAddr> = mgr
+        .fleet_path
+        .as_deref()
+        .and_then(|p| load_fleet_file(p).ok())
+        .and_then(|f| f.manager)
+        .and_then(|m| m.addr.trim().parse::<SocketAddr>().ok());    let control_addr = match (su.addr_explicit, persisted_addr) {
+        (false, Some(a)) => a,
+        _ => su.control_addr,
+    };
+    let mut listener = bind_with_retry(control_addr, Duration::from_secs(2))
         .await
         .map_err(|e| format!("管理台端口被占用: {e}"))?;
     let addr = listener
@@ -1262,6 +1359,7 @@ pub async fn run_manager_with(
         cb(ServiceEvent::Ready(addr));
     }
     println!("SerialHub 管理台就绪: http://{addr} (多桥管理器)");
+    mgr.set_manager_addr(addr);
 
     // 2) fleet 恢复 (存在则恢复全部桥, FR-10b)
     let restored = restore_fleet(&mgr).await;
@@ -1293,6 +1391,19 @@ pub async fn run_manager_with(
                 Err(e) => eprintln!("serialhub: 兼容桥创建失败: {e} (管理台继续可用)"),
             }
         }
+    }
+
+    // FR-13: 清单已存在时同步一次 [manager] 段 (现地址入档; 不新建文件 ——
+    // 全新安装首次落盘仍以首次桥变更为准, 避免无谓写文件)
+    if mgr.fleet_path.as_ref().map_or(false, |p| p.exists()) {
+        mgr.persist();
+    }
+
+    // FR-14: 主题目录初始化 (默认 exe 旁 themes/; --themes-dir 可指定)。
+    // 失败不致命: 管理台照常服务, 主题列表为空 (/themes 端点按现状 404)。
+    let themes_dir = su.themes_dir.clone().unwrap_or_else(crate::themes::default_themes_dir);
+    if let Err(e) = crate::themes::ensure_builtin(&themes_dir) {
+        eprintln!("serialhub: 主题目录初始化失败 ({themes_dir:?}): {e} (FR-14)");
     }
 
     // 4) 后台任务: legacy 指令泵 / 统计采样 / Ctrl-C / 相位聚合
@@ -1391,6 +1502,7 @@ pub async fn run_manager_with(
             shutdown_tx: shutdown_tx.clone(),
             restart_to: round_rebind.clone(),
             index: include_str!("../ui/index.html"),
+            themes_dir: themes_dir.clone(),
         };
         // 首轮用 Ready 前订阅好的接收端 (无晚订阅竞态); 换址轮重新订阅
         let mut serve_sd = first_serve_sd
@@ -1461,8 +1573,12 @@ pub async fn run_manager_with(
                 );
                 cur_addr = bound_addr;
                 listener = bound;
+                // FR-13: 新地址持久化 ([manager] 段, 重启恢复)。
+                // 回退原地址时 bound_addr == cur_addr, 写入无害 (现状即真相)。
+                mgr.set_manager_addr(cur_addr);
+                mgr.persist();
                 if let Some(cb) = &on_event {
-                    cb(ServiceEvent::Ready(cur_addr)); // 供壳层跟随新地址 (FR-9a 语义)
+                    cb(ServiceEvent::Ready(cur_addr)); // 壳层跟随新地址 (gui.rs → webview navigate)
                 }
                 continue;
             }
@@ -1572,7 +1688,7 @@ mod tests {
                 flow: "rtscts".into(),
             },
         }];
-        save_fleet(&path, &recs).unwrap();
+        save_fleet(&path, &recs, None).unwrap();
         let back = load_fleet(&path).unwrap();
         assert_eq!(back, recs);
         assert!(!back[0].auto_reconnect, "autoReconnect 原样往返 (FR-12)");
@@ -1581,6 +1697,39 @@ mod tests {
         assert_eq!(cfg.baud, 921_600);
         assert_eq!(cfg.flow, Flow::RtsCts);
         assert_eq!(cfg.config_str(), "8N2");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// FR-13: [manager] 段往返 —— 写入/读取原样, 旧清单无该段 → None 兼容。
+    #[test]
+    fn fleet_file_manager_rec_roundtrip() {
+        let path = std::env::temp_dir().join(format!("sh_fleet_mgr_{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let recs: Vec<FleetBridgeRec> = Vec::new();
+        // 带段写入
+        save_fleet(
+            &path,
+            &recs,
+            Some(&ManagerRec {
+                addr: "127.0.0.1:8100".into(),
+            }),
+        )
+        .unwrap();
+        let f = load_fleet_file(&path).unwrap();
+        assert_eq!(
+            f.manager,
+            Some(ManagerRec {
+                addr: "127.0.0.1:8100".into()
+            })
+        );
+        // 无段写入 → 读回 None (写出时空段跳过)
+        save_fleet(&path, &recs, None).unwrap();
+        let f = load_fleet_file(&path).unwrap();
+        assert_eq!(f.manager, None);
+        // 旧式清单 (无 manager 字段) 也能解析
+        std::fs::write(&path, r#"{"version":1,"bridges":[]}"#).unwrap();
+        let f = load_fleet_file(&path).unwrap();
+        assert_eq!(f.manager, None);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1646,6 +1795,10 @@ mod tests {
         addr: SocketAddr,
         shutdown_tx: watch::Sender<bool>,
         handle: JoinHandle<Result<(), String>>,
+        /// FR-14: 本实例的主题目录 (spawn_mgr 分配的唯一临时目录)。
+        themes_dir: PathBuf,
+        /// 全部 ServiceEvent 的时间线 (Ready 换址跟随/Phase/Stopped 断言用)。
+        events: Arc<Mutex<Vec<ServiceEvent>>>,
     }
 
     impl TestMgr {
@@ -1660,12 +1813,32 @@ mod tests {
     }
 
     async fn spawn_mgr(fleet: Option<PathBuf>, cli: Option<CliBridgeSpec>) -> TestMgr {
+        spawn_mgr_opt(fleet, cli, "127.0.0.1:0".parse().unwrap(), false).await
+    }
+
+    /// 可控启动: 控制面初值 + 是否显式 --addr (FR-13 恢复优先级测试用)。
+    async fn spawn_mgr_opt(
+        fleet: Option<PathBuf>,
+        cli: Option<CliBridgeSpec>,
+        control_addr: SocketAddr,
+        addr_explicit: bool,
+    ) -> TestMgr {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        // 每实例唯一临时主题目录 (FR-14), 避免并行测试互写同一落盘目录
+        let themes_dir = std::env::temp_dir().join(format!(
+            "sh_themes_{}_{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
         let mgr = Arc::new(BridgeManager::new(fleet));
         let (_cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HubCmd>();
         let (shutdown_tx, _) = watch::channel(false);
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<SocketAddr>();
         let ready_tx = Arc::new(Mutex::new(Some(ready_tx)));
+        let events: Arc<Mutex<Vec<ServiceEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let ev_log = events.clone();
         let on_event: OnEvent = Arc::new(move |ev: ServiceEvent| {
+            ev_log.lock().unwrap().push(ev.clone());
             if let ServiceEvent::Ready(a) = ev {
                 if let Some(tx) = ready_tx.lock().unwrap().take() {
                     let _ = tx.send(a);
@@ -1673,7 +1846,9 @@ mod tests {
             }
         });
         let su = ManagerStartup {
-            control_addr: "127.0.0.1:0".parse().unwrap(),
+            control_addr,
+            addr_explicit,
+            themes_dir: Some(themes_dir.clone()),
             cli_bridge: cli,
             fleet_path: None, // 直接注入 mgr 时以 mgr.fleet_path 为准
         };
@@ -1693,6 +1868,8 @@ mod tests {
             addr,
             shutdown_tx,
             handle,
+            themes_dir,
+            events,
         }
     }
 
@@ -2032,7 +2209,7 @@ mod tests {
                 },
             },
         ];
-        save_fleet(&path, &recs).unwrap();
+        save_fleet(&path, &recs, None).unwrap();
         let t = spawn_mgr(Some(path.clone()), None).await;
         let (_, resp) = http_req(t.addr, "GET", "/api/fleet", None).await;
         let v: Value = serde_json::from_str(&resp).unwrap();
@@ -2524,6 +2701,167 @@ mod tests {
         // ports 仍可用
         let (code, _) = http_req(t.addr, "GET", "/api/ports", None).await;
         assert_eq!(code, 200);
+        t.shutdown().await;
+    }
+
+    // ---- FR-13: 管理台地址换绑 + [manager] 持久化 + 重启恢复 ----
+
+    /// 挑一个当前空闲的 127.0.0.1 端口 (绑定后立即释放)。
+    async fn free_port() -> u16 {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        l.local_addr().unwrap().port()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn manager_addr_rebind_persists_and_restores() {
+        let path = temp_fleet("mgraddr");
+        let t = spawn_mgr_opt(Some(path.clone()), None, "127.0.0.1:0".parse().unwrap(), false).await;
+        // 先建一座桥: 换绑管理台不得影响桥数据面 (FR-13 硬边界)
+        let v = fleet_create_ok(
+            t.addr,
+            r#"{"name":"稳定桥","listen":"127.0.0.1:0","autoOpen":false}"#,
+        )
+        .await;
+        let bridge_listen: SocketAddr = v["listen"].as_str().unwrap().parse().unwrap();
+        // 选一个空闲目标端口
+        let new_port = free_port().await;
+        let new_addr = SocketAddr::from(([127, 0, 0, 1], new_port));
+        // POST /api/manager/addr → 受理
+        let (code, resp) = http_req(
+            t.addr,
+            "POST",
+            "/api/manager/addr",
+            Some(&format!(r#"{{"addr":"{new_addr}"}}"#)),
+        )
+        .await;
+        assert_eq!(code, 200, "换址应受理: {resp}");
+        // 原地换绑: 旧地址关闭, 新地址就绪 (<1s 量级, 给 3s 余量)
+        assert!(
+            wait_connectable(new_addr, true, Duration::from_secs(3)).await,
+            "新地址应就绪"
+        );
+        assert!(
+            wait_connectable(t.addr, false, Duration::from_secs(3)).await,
+            "旧地址应关闭"
+        );
+        // 桥数据面不动
+        assert!(
+            wait_connectable(bridge_listen, true, Duration::from_secs(3)).await,
+            "桥数据端口必须不受管理台换址影响"
+        );
+        // [manager] 段持久化 (重启恢复的依据)
+        let f = load_fleet_file(&path).unwrap();
+        assert_eq!(
+            f.manager.map(|m| m.addr),
+            Some(new_addr.to_string()),
+            "换址成功后 [manager] 段须写入清单"
+        );
+        // Ready(新地址) 事件 (壳层 webview 跟随的依据)
+        let evs = t.events.lock().unwrap().clone();
+        let last_ready = evs
+            .iter()
+            .filter_map(|e| match e {
+                ServiceEvent::Ready(a) => Some(*a),
+                _ => None,
+            })
+            .last()
+            .expect("至少一次 Ready");
+        assert_eq!(last_ready, new_addr, "换绑成功后须发 Ready(新地址)");
+        // 非法地址 → 400 (原地址继续服务)
+        let (code, _) = http_req(
+            new_addr,
+            "POST",
+            "/api/manager/addr",
+            Some(r#"{"addr":"not-an-addr"}"#),
+        )
+        .await;
+        assert_eq!(code, 400);
+        t.shutdown().await;
+
+        // 重启恢复: 未显式 --addr → 控制面回到持久化地址
+        let t2 = spawn_mgr_opt(Some(path.clone()), None, "127.0.0.1:0".parse().unwrap(), false).await;
+        assert_eq!(t2.addr, new_addr, "重启后应恢复 [manager] 持久化地址");
+        t2.shutdown().await;
+
+        // 显式 --addr 优先于清单恢复值
+        let t3 = spawn_mgr_opt(Some(path.clone()), None, "127.0.0.1:0".parse().unwrap(), true).await;
+        assert_ne!(
+            t3.addr, new_addr,
+            "显式 --addr (:0 → 随机) 应优先于 [manager] 恢复值"
+        );
+        t3.shutdown().await;
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ---- FR-14: 主题插件端点 ----
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn themes_endpoints_list_serve_and_traversal_guard() {
+        let t = spawn_mgr(None, None).await;
+        // 启动时内置主题已落盘 (ensure_builtin), 列表应含三套内置
+        let (code, resp) = http_req(t.addr, "GET", "/api/themes", None).await;
+        assert_eq!(code, 200, "{resp}");
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        let list = v["themes"].as_array().expect("themes 数组");
+        let get = |n: &str| list.iter().find(|t| t["name"] == n).cloned();
+        for builtin in ["light", "dark", "example-oreo"] {
+            let e = get(builtin).unwrap_or_else(|| panic!("内置主题 {builtin} 应在列: {resp}"));
+            assert_eq!(e["builtin"], true, "{builtin} builtin 标记");
+        }
+        assert!(
+            list.iter().all(|e| e["builtin"] == true),
+            "此刻目录里只有内置主题"
+        );
+        // 插件语义: 丢一个自制 css 进目录 → 扫描即见 (builtin=false)
+        std::fs::write(t.themes_dir.join("my-plugin.css"), ":root{--bg:#000}").unwrap();
+        let (_, resp) = http_req(t.addr, "GET", "/api/themes", None).await;
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        let e = v["themes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["name"] == "my-plugin")
+            .cloned()
+            .expect("插件主题应被扫描到");
+        assert_eq!(e["builtin"], false);
+        // 静态服务: 命中内置 (200 + :root 令牌)
+        let (code, body) = http_req(t.addr, "GET", "/themes/dark.css", None).await;
+        assert_eq!(code, 200);
+        assert!(body.contains(":root") && body.contains("--bg:#14171a"), "{body}");
+        // 静态服务: 插件文件
+        let (code, body) = http_req(t.addr, "GET", "/themes/my-plugin.css", None).await;
+        assert_eq!(code, 200);
+        assert!(body.contains("--bg:#000"));
+        // 静态服务: 未命中
+        let (code, _) = http_req(t.addr, "GET", "/themes/missing.css", None).await;
+        assert_eq!(code, 404);
+        // 路径穿越: 多段 (`..` 路径段) 路由不匹配
+        let (code, _) = http_req(t.addr, "GET", "/themes/../Cargo.toml", None).await;
+        assert_eq!(code, 404, "目录上跳不得命中");
+        // 路径穿越: 百分号编码挤进单段 (../Cargo.toml / ..\Cargo.toml) → resolve 拒绝
+        let (code, _) = http_req(t.addr, "GET", "/themes/%2e%2e%2fCargo.toml", None).await;
+        assert_eq!(code, 404, "编码穿越 (../) 不得命中");
+        let (code, _) = http_req(t.addr, "GET", "/themes/%2e%2e%5cCargo.toml", None).await;
+        assert_eq!(code, 404, "编码穿越 (..\\) 不得命中");
+        // 非法字符名
+        let (code, _) = http_req(t.addr, "GET", "/themes/%E4%B8%AD%E6%96%87.css", None).await;
+        assert_eq!(code, 404, "白名单外文件名不得命中");
+        // 非 css
+        let (code, _) = http_req(t.addr, "GET", "/themes/fake.css.css", None).await;
+        assert_eq!(code, 404, "不存在的文件不得命中");
+        let dir = t.themes_dir.clone();
+        t.shutdown().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- FR-15: 网页 favicon ----
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn favicon_endpoint_serves_svg() {
+        let t = spawn_mgr(None, None).await;
+        let (code, body) = http_req(t.addr, "GET", "/favicon.svg", None).await;
+        assert_eq!(code, 200, "favicon 端点恒可用 (资产缺失走兜底)");
+        assert!(body.contains("<svg"), "应为 SVG: {body}");
         t.shutdown().await;
     }
 }

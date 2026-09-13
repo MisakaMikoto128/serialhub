@@ -32,6 +32,7 @@ SerialHub — 串口 <-> WebSocket 桥接管理器 (内嵌 Web 控制台)
   --no-reconnect     关闭自动重连: 掉线即停 (已停止), 手动打开仍可用
   --fleet <路径>     桥清单文件路径 (默认 %APPDATA%\\SerialHub\\fleet.json; FR-10b)
   --no-fleet         关闭桥清单持久化 (FR-10b)
+  --themes-dir <路径> 主题目录 (FR-14, 默认 exe 旁 themes/; 不存在则启动时创建并写入内置主题)
   --headless         纯 CLI 前台模式: 无窗口无托盘 (自动化测试与脚本场景, FR-8)
   --gui              原生窗口 + 托盘模式 (默认; 与 --headless 互斥)
   -h, --help         显示本帮助
@@ -66,6 +67,10 @@ pub struct Cli {
     pub no_fleet: bool,
     /// FR-12/ADR-16①: 串口断开后自动重连 (默认 true; --no-reconnect 关闭)。
     pub auto_reconnect: bool,
+    /// FR-14: 主题目录 (None = exe 旁 themes/, 运行时由 themes::default_themes_dir 兜底)。
+    pub themes_dir: Option<PathBuf>,
+    /// FR-13: 本次启动是否显式给出 --addr (显式地址优先于 fleet.json [manager] 恢复)。
+    pub addr_explicit: bool,
 }
 
 impl Cli {
@@ -111,6 +116,8 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
     let mut fleet: Option<PathBuf> = None;
     let mut no_fleet = false;
     let mut auto_reconnect = true; // FR-12: 默认开启自动重连
+    let mut themes_dir: Option<PathBuf> = None; // FR-14: 默认 exe 旁 themes/
+    let mut addr_explicit = false; // FR-13: --addr 是否显式给出
 
     let mut i = 0usize;
     while i < args.len() {
@@ -146,6 +153,7 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
             }
             "--addr" => {
                 addr_str = val!();
+                addr_explicit = true;
             }
             "--list-ports" => list_ports = true,
             "--no-open" => no_open = true,
@@ -168,6 +176,14 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
                 fleet = Some(PathBuf::from(t));
             }
             "--no-fleet" => no_fleet = true,
+            "--themes-dir" => {
+                let v = val!();
+                let t = v.trim().to_string();
+                if t.is_empty() {
+                    return Err("--themes-dir 不能为空字符串".into());
+                }
+                themes_dir = Some(PathBuf::from(t));
+            }
             "--reconnect" => auto_reconnect = true,
             "--no-reconnect" => auto_reconnect = false,
             "--headless" => headless = true,
@@ -199,6 +215,8 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
         fleet,
         no_fleet,
         auto_reconnect,
+        themes_dir,
+        addr_explicit,
     })
 }
 
@@ -333,5 +351,23 @@ mod tests {
         assert!(c.auto_reconnect);
         let c = parse_str("--reconnect --no-reconnect").unwrap();
         assert!(!c.auto_reconnect);
+    }
+
+    #[test]
+    fn themes_dir_and_addr_explicit_flags() {
+        // FR-14: --themes-dir 解析; 默认 None (= exe 旁 themes/)
+        let c = parse(&[]).unwrap();
+        assert!(c.themes_dir.is_none());
+        let c = parse_str("--themes-dir D:\\t").unwrap();
+        assert_eq!(c.themes_dir.unwrap().to_string_lossy(), "D:\\t");
+        let c = parse_str("--themes-dir themes").unwrap();
+        assert_eq!(c.themes_dir.unwrap().to_string_lossy(), "themes");
+        assert!(parse_str("--themes-dir").is_err()); // 缺值
+        assert!(parse_str("--themes-dir  ").is_err()); // 空值
+
+        // FR-13: --addr 显式标记 (恢复 fleet.json [manager] 地址时, 显式地址优先)
+        assert!(!parse(&[]).unwrap().addr_explicit, "默认不显式");
+        assert!(parse_str("--addr 127.0.0.1:9000").unwrap().addr_explicit);
+        assert!(!parse_str("--port COM1").unwrap().addr_explicit);
     }
 }

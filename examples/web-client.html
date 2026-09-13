@@ -1,0 +1,80 @@
+<!doctype html>
+<!-- SerialHub 是原始字节管道 —— 串口的"值"的语义 (如 Modbus 寄存器) 由你的协议层负责。
+     零依赖最小接入示例: 双击打开本文件即可用。真实数据网址看桥卡片/启动输出
+     (管理台端口 ≠ 数据端口!), 填进下面输入框再连。
+     三条铁律 (详见用户手册「程序接入」):
+     1. 原始字节帧: /ws 只收发二进制字节, 本例收到的任何字节都不做协议解释;
+     2. WS 消息边界 != 串口帧边界: 一次 write 可能拆成多条消息, 多次可能被合并,
+        所以收区只"展示"分块, 组帧/解析由你的协议栈自己做;
+     3. 多客户端广播: 串口收到的字节广播给所有已连客户端 (可开两个本页对比), TX 经队列串行化。 -->
+<html lang="zh">
+<meta charset="utf-8">
+<title>SerialHub 最小接入示例</title>
+<style>
+  body{font:14px/1.6 system-ui,sans-serif;max-width:760px;margin:24px auto;padding:0 12px;color:#222}
+  #log{height:300px;overflow:auto;background:#111;color:#0d0;white-space:pre-wrap;padding:8px;border-radius:6px}
+  input,button,select{font:inherit;padding:6px 10px;border-radius:6px;border:1px solid #bbb;margin:2px 0}
+  button{cursor:pointer;background:#2563eb;color:#fff;border:0}
+  button:disabled{background:#999;cursor:not-allowed}
+  #url{width:340px}#msg{width:400px}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0}
+  .dim{color:#777;font-size:12px}
+</style>
+<h2>SerialHub 最小接入示例 (原始字节收发)</h2>
+<div class="row">
+  <label>桥数据网址 <input id="url" value="ws://127.0.0.1:8090/ws" size="28"></label>
+  <button id="btn">连接</button>
+  <label><input type="checkbox" id="hex" checked> HEX</label>
+  <span id="st" class="dim">未连接</span>
+</div>
+<div class="row dim">收到的原始字节 (展示分块; 消息边界 != 串口帧边界, 组帧自己做) ↓ / 发送 (UTF-8 字节) ↑</div>
+<div id="log"></div>
+<div class="row">
+  <input id="msg" placeholder="输入文本, 原始二进制字节发送">
+  <button id="send" disabled>发送</button>
+  <button id="clear">清空</button>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+let ws = null;
+const seen = [];                            // 收发历史 {time, tag, bytes}, 切换视图整表重绘
+const stamp = () => new Date().toTimeString().slice(0, 8);
+function fmt(bytes) {                       // bytes: Uint8Array 原始字节
+  if ($('hex').checked)
+    return [...bytes].map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
+  return [...bytes].map(b => (b >= 0x20 && b < 0x7f) ? String.fromCharCode(b) : '·').join('');
+}                                           // ASCII 视图: 可打印字符原样, 其余显示 ·
+function log(tag, bytes) {
+  seen.push({ time: stamp(), tag, bytes });
+  const div = document.createElement('div');
+  div.textContent = `${stamp()} ${tag} (${bytes.length}B) ${fmt(bytes)}`;
+  $('log').appendChild(div);
+  $('log').scrollTop = $('log').scrollHeight;
+}
+function setUI(on) {
+  $('btn').textContent = on ? '断开' : '连接';
+  $('send').disabled = !on;
+  $('st').textContent = on ? '已连接 (字节广播中)' : '未连接';
+}
+$('btn').onclick = () => {
+  if (ws) { ws.close(); return; }          // 主动断开 → onclose 统一收尾
+  ws = new WebSocket($('url').value);      // 数据端点: ws://<桥网址>/ws
+  ws.binaryType = 'arraybuffer';           // 铁律 1: 拿到的就是原始字节
+  ws.onopen = () => { setUI(true); log('开', new Uint8Array(0)); };
+  ws.onmessage = e => log('收', new Uint8Array(e.data));   // 铁律 2: 只展示, 不组帧
+  ws.onclose = () => { ws = null; setUI(false); log('闭', new Uint8Array(0)); };
+  ws.onerror = () => { $('st').textContent = '连接失败 (桥没起? 网址对吗?)'; };
+};
+$('send').onclick = () => {
+  const s = $('msg').value;                // 铁律 1: 文本也编码成原始字节再发
+  if (!s || !ws) return;
+  ws.send(new TextEncoder().encode(s));    // 二进制帧 → 桥串行写入串口
+  log('发', new TextEncoder().encode(s));
+  $('msg').value = '';
+};
+$('msg').onkeydown = e => { if (e.key === 'Enter') $('send').click(); };
+$('clear').onclick = () => { $('log').innerHTML = ''; seen.length = 0; };
+$('hex').onchange = () =>                  // 切 HEX/ASCII: 历史整表重绘
+  [...$('log').children].forEach((div, i) =>
+    { const { time, tag, bytes } = seen[i]; div.textContent = `${time} ${tag} (${bytes.length}B) ${fmt(bytes)}`; });
+</script>

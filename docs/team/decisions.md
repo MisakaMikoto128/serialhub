@@ -144,3 +144,16 @@ service.rs serve 循环化: rebind 槽 (每轮新建) 触发 serve 任务第二�
 ③ 社区文件: CONTRIBUTING (多智能体回路+传统贡献双轨) / CODE_OF_CONDUCT (Contributor
    Covenant) / SECURITY (如实注明 v1.x 无 TLS, 勿暴露不可信网络) / CI 三平台。
 ④ 用户手册 docs/manual/ 与 README 双语 (中文为主, 英文节选), 截图统一 docs/images/。
+
+## ADR-18 Sprint 7 (2026-09-12, 架构师; 用户四需求)
+
+① FR-13 管理台设置: 控制面端口运行时可改 (原地换绑复用 ADR-12 机制, fleet.json [manager]
+   持久化, 壳 webview 与浏览器页自动跟随); 页头「打开面板」按钮 (壳→默认浏览器, 页→新标签)。
+② FR-14 主题=文件夹插件: themes/*.css 只覆盖 :root 设计令牌; GET /api/themes 扫描 +
+   /themes/<file> 静态服务; UI 动态切换无刷新, 选择存浏览器本地; 内置 浅色/深色/示例第三方
+   主题 (示范插件格式); --themes-dir 可指定。
+③ FR-15 图标: 新 SVG 主标 (桥+串口母题) 全尺寸资产 (ico/png/favicon), exe 内嵌 (winres) +
+   窗口/托盘三态变体 + 网页 favicon。
+④ 最小接入 demo: examples/web-client.html (零依赖) + examples/python-client.py —— 原始字节
+   读写示范, 值语义属客户端协议 (手册教程节引用)。
+⑤ UX 审计 (105): 改动落定后全站美感复审, P1 当轮修。

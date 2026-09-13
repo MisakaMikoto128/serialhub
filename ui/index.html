@@ -58,14 +58,16 @@ header .sub{color:var(--muted);font-size:12px;font-weight:400;margin-left:4px}
 header .spacer{flex:1}
 .brand-mark{display:inline-block;width:10px;height:10px;background:var(--accent);
   margin-right:8px;border-radius:2px;vertical-align:baseline}
-/* 控制台网址块: 管理台地址固定, 只展示+复制; 程序请连各桥自己的网址 */
+/* 波3 (UX P2-1): 页头按钮组整体换行 (不拆散单颗钮) */
+.hdr-actions{display:flex;align-items:center;gap:12px;flex:none}
+/* 控制台网址块: 展示+复制; 网址可在「设置」里改 (FR-13), 改后本页自动跟随 */
 .urlchip{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--border);
   background:var(--panel-2);border-radius:var(--ctl-radius);padding:4px 8px 4px 12px;font-size:12px;color:var(--muted);
   max-width:100%}
 .urlchip code{font-family:var(--mono);font-size:12px;color:var(--ink);word-break:break-all}
 .quit-btn{border-color:var(--err);color:var(--err);background:var(--panel)}
 .quit-btn:hover:not(:disabled){background:var(--err-bg);border-color:var(--err);color:var(--err-ink)}
-.quit-btn.armed{background:var(--err);border-color:var(--err);color:#fff}
+.quit-btn.armed{background:var(--err);border-color:var(--err);color:var(--err-bg)} /* armed 文字取 --err 的配对反色 (--err-bg), 深浅主题自动可读, 无硬编码 */
 .quit-btn:disabled{opacity:.6}
 
 /* ============ 通知条 (操作结果/连接状态) ============ */
@@ -110,7 +112,7 @@ main{max-width:1200px;margin:0 auto;padding:var(--gap)}
   max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .node .nwrap{display:flex;align-items:center;gap:4px;justify-content:center;min-width:0}
 .node.bridge{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);flex:0 0 auto}
-.node.bridge .cap{color:rgba(255,255,255,.75)}
+.node.bridge .cap{color:inherit;opacity:.75} /* 继承 .node.bridge 的 --accent-ink, 随主题自动成立, 无硬编码 */
 .wire{flex:none;width:44px;height:26px}
 .wire line{stroke:var(--border-strong);stroke-width:2;stroke-dasharray:5 4;transition:stroke .2s}
 .wire line.on-rx{stroke:var(--rx);animation:dashR .5s linear infinite}
@@ -155,12 +157,14 @@ button{background:var(--panel-2);border:1px solid var(--border-strong);border-ra
   display:inline-flex;align-items:center;justify-content:center;white-space:nowrap}
 /* 紧凑档 (--ctl-h-sm): 仅工具条/标题条/侦听工具条内小按钮 */
 .quit-btn,.copy-btn,.mini-copy,.x-btn,.seg button,.term-toolbar>button{height:var(--ctl-h-sm)}
+/* 波3 (UX P2-1): 页头钮统一标准档 34 —— 新钮与原住民同排同高, 不再有"两代按钮" */
+#btnCopyUrl,#btnQuit{height:var(--ctl-h)}
 button:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
 button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
 button.primary:hover:not(:disabled){background:var(--accent-hover);color:var(--accent-ink)}
 button.danger{border-color:var(--err);color:var(--err)}
 button.danger:hover:not(:disabled){background:var(--err-bg)}
-button.danger.armed{background:var(--err);border-color:var(--err);color:#fff}
+button.danger.armed{background:var(--err);border-color:var(--err);color:var(--err-bg)} /* 同 quit-btn.armed: 配对反色, 无硬编码 */
 .field{display:flex;align-items:center;gap:8px;margin-bottom:8px}
 .field>label{width:72px;flex:none;color:var(--muted);font-size:12px;white-space:nowrap}
 .field .ctl{flex:1;display:flex;align-items:center;gap:8px;min-width:0}
@@ -286,16 +290,36 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
   .rgrp .spark{width:80px}
 }
 </style>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+<script>
+/* FR-14: 启动先应用记忆的主题再渲染 (防闪白) —— 本脚本在 <head> 内同步执行,
+   主题 CSS 以 <link id="themeCss"> 挂上后才轮到 <body> 渲染; 无记忆则用内置浅色。 */
+(function () {
+  try {
+    var t = localStorage.getItem("sh_theme");
+    if (t) {
+      var l = document.createElement("link");
+      l.id = "themeCss"; l.rel = "stylesheet";
+      l.href = "/themes/" + encodeURIComponent(t) + ".css";
+      document.head.appendChild(l);
+    }
+  } catch (_) { /* localStorage 不可用 (隐私模式等): 用内置浅色 */ }
+})();
+</script>
 </head>
 <body>
 <header>
   <h1><span class="brand-mark"></span>SerialHub<span class="sub">串口桥接管理器 · 让网页连上串口</span></h1>
   <span class="spacer"></span>
-  <span class="urlchip" title="管理台网址固定不变; 程序请连各桥自己的网址">
+  <span class="urlchip" title="管理台网址; 各桥有自己的数据网址, 程序请连各桥的">
     <span>控制台网址</span><code id="consoleUrl">…</code>
     <button id="btnCopyUrl" type="button" class="copy-btn" title="复制控制台网址">复制</button>
   </span>
-  <button id="btnQuit" type="button" class="quit-btn" title="关闭 SerialHub: 所有桥会停止, 已连的网页会断开">退出程序</button>
+  <span class="hdr-actions">
+    <button id="btnOpenPanel" type="button" title="在系统默认浏览器打开管理台; 弹不出来时会自动复制网址">打开面板</button>
+    <button id="btnSettings" type="button" title="主题、管理台网址">设置</button>
+    <button id="btnQuit" type="button" class="quit-btn" title="关闭 SerialHub: 所有桥会停止, 已连的网页会断开">退出程序</button>
+  </span>
 </header>
 
 <div id="noticeBar" role="alert"></div>
@@ -369,6 +393,33 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
     <span class="hint"></span><span class="grow"></span>
     <button id="btnCancelNew" type="button">取消</button>
     <button id="btnCreate" type="button" class="primary">创建并启动</button>
+  </div>
+</dialog>
+
+<!-- ============ 设置弹窗 (Sprint7 FR-13/14: 主题 + 管理台网址) ============ -->
+<dialog id="dlgSettings" aria-labelledby="dlgSetTitle">
+  <div class="dlg-head"><h2 id="dlgSetTitle">设 置</h2>
+    <button type="button" class="x-btn" id="btnSetX" title="关闭" aria-label="关闭设置窗口">✕</button></div>
+  <div class="dlg-body">
+    <div class="field">
+      <label for="setTheme">主题</label>
+      <div class="ctl"><select id="setTheme" title="换主题立刻生效, 不刷新页面"></select></div>
+    </div>
+    <div class="ferr" id="setErrTheme" hidden></div>
+    <div class="send-hint">换主题立刻生效, 记在这台电脑的浏览器里; 想自制主题, 把样式文件放进程序的 themes 目录就行。</div>
+    <div class="field">
+      <label for="setAddr">管理台网址</label>
+      <div class="ctl"><input id="setAddr" type="text" placeholder="127.0.0.1:8080"
+        title="管理台自己的网址, 形如 127.0.0.1:8080; 改好后本页自动跳到新网址" /></div>
+    </div>
+    <div class="ferr" id="setErrAddr" hidden></div>
+    <div class="send-hint">改的是管理台自己的网址: 串口不受影响, 本页将自动跳到新网址, 重启后仍用新网址。</div>
+    <div id="setErr" class="form-err"></div>
+  </div>
+  <div class="dlg-foot">
+    <span class="hint"></span><span class="grow"></span>
+    <button id="btnSetCancel" type="button">取消</button>
+    <button id="btnSetApply" type="button" class="primary">应用</button>
   </div>
 </dialog>
 
@@ -494,7 +545,7 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
         <div class="send-hint">在命令行里跑这条, 效果和这座桥完全一样; 不想弹窗口就加 --headless</div>
       </details>
       <div class="actions" style="margin-top:12px;display:flex;align-items:center;gap:8px">
-        <button id="btnCfCopyCmd" type="button" class="copy-btn" title="复制命令行写法">📋 复制</button>
+        <button id="btnCfCopyCmd" type="button" class="copy-btn" title="复制命令行写法">复制</button>
         <button id="btnCfSave" type="button" class="primary" title="保存这座桥的设置">保 存</button>
       </div>
     </section>
@@ -559,9 +610,22 @@ const encoder = new TextEncoder();
 
 /* 桌面壳注入 window.__SERIALHUB_SHELL (gui.rs); 浏览器里没有 → 退出按钮置灰 */
 const IS_SHELL = (typeof window !== "undefined") && window.__SERIALHUB_SHELL === true;
-const CSS = getComputedStyle(document.documentElement);
-const C_RX = (CSS.getPropertyValue("--rx") || "#1e8e4e").trim();
-const C_TX = (CSS.getPropertyValue("--tx") || "#0b6aa8").trim();
+let C_RX = "#1e8e4e", C_TX = "#0b6aa8"; /* 火花线方向色: 从当前主题令牌读 (FR-14 换肤后重读) */
+function refreshSparkColors() {
+  const cs = getComputedStyle(document.documentElement);
+  C_RX = (cs.getPropertyValue("--rx") || "#1e8e4e").trim();
+  C_TX = (cs.getPropertyValue("--tx") || "#0b6aa8").trim();
+  if (window.__sh) window.__sh.sparkColors = { rx: C_RX, tx: C_TX }; /* QA 观测口 */
+  for (const [id, e] of cards) {
+    const h = hist.get(id) || { rx: [], tx: [] };
+    e.sRx.innerHTML = sparkSvg(h.rx, C_RX);
+    e.sTx.innerHTML = sparkSvg(h.tx, C_TX);
+  }
+  if (drawerId) {
+    $("sparkBigRx").innerHTML = sparkSvgWide((hist.get(drawerId) || { rx: [] }).rx, C_RX, 300, 40);
+    $("sparkBigTx").innerHTML = sparkSvgWide((hist.get(drawerId) || { tx: [] }).tx, C_TX, 300, 40);
+  }
+}
 
 let bridges = [];                /* 最近一次 /api/fleet 的桥列表 */
 const cards = new Map();         /* id → 卡片元素引用 */
@@ -636,6 +700,7 @@ async function copyText(t, btn, idle) {
     btn.textContent = ok ? "已复制" : "复制失败";
     setTimeout(() => { btn.textContent = idle || "复制"; }, 1500);
   }
+  return ok;
 }
 
 /* ================= 火花线 (最近 60 秒速率) ================= */
@@ -886,10 +951,14 @@ function fillPortSelect(sel, ports, cur) {
     sel.appendChild(o);
   }
   for (const p of ports) {
+    /* 波3 (UX P2-4): 描述尾部与端口名重复的 "(COMxx)" 剥掉, 下拉不出现 COM8 — xxx (COM8) */
+    let desc = p.desc || "";
+    const nameRe = String(p.name || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (nameRe) desc = desc.replace(new RegExp("\\s*\\(" + nameRe + "\\)\\s*$"), "").trim();
     const o = document.createElement("option");
     o.value = p.name;
-    o.textContent = p.desc ? p.name + " — " + p.desc : p.name;
-    o.title = p.desc || p.name;
+    o.textContent = desc ? p.name + " — " + desc : p.name;
+    o.title = p.desc || p.name; /* 悬浮题保留设备原始描述 */
     sel.appendChild(o);
   }
   if (cur && [...sel.options].some((o) => o.value === cur)) sel.value = cur;
@@ -1152,9 +1221,11 @@ function syncDrawerLive() {
   $("sparkBigRx").innerHTML = sparkSvgWide((hist.get(b.id) || { rx: [] }).rx, C_RX, 300, 40);
   $("sparkBigTx").innerHTML = sparkSvgWide((hist.get(b.id) || { tx: [] }).tx, C_TX, 300, 40);
   const fl = b.serial && b.serial.flow;
+  /* 波3 (UX P2-2): 校验位缺记录时给带标签的占位话术, 不再裸 "--" (UI-0: 不看文档猜得出) */
   $("stParam").innerHTML =
     "串口 <b>" + esc((b.serial && b.serial.port) || "—") + "</b> · <b>" + esc(String((b.serial && b.serial.baud) || "—")) +
-    "</b> · <b>" + esc((b.serial && b.serial.config) || "—") + "</b> · 流控 <b>" + esc(FLOW_TEXT[fl] || fl || "—") +
+    "</b> · " + ((b.serial && b.serial.config) ? "校验 <b>" + esc(String(b.serial.config)) + "</b>" : "<b>校验 未记录</b>") +
+    " · 流控 <b>" + esc(FLOW_TEXT[fl] || fl || "—") +
     "</b> · 网址 <b>" + esc(b.listen || "—") + "</b>";
   if (b.lastError) { $("stErr").textContent = "上次出错: " + b.lastError; $("stErr").classList.add("show"); }
   else { $("stErr").classList.remove("show"); $("stErr").textContent = ""; }
@@ -1399,6 +1470,161 @@ $("btnQuit").addEventListener("click", async () => {
   try { await fetch("/api/shutdown", { method: "POST" }); } catch (_) {}
 });
 
+/* ================= 打开面板 (FR-13): 浏览器页→新标签; 桌面壳→复制降级 =================
+   壳 (wry/WebView2) 未设新窗口处理器, 原生层会把 window.open 吞掉 (Sprint7 实测见报告):
+   返回空 = 没弹出来, 降级为复制网址 + 提示; 浏览器页 window.open 正常开新标签。 */
+$("btnOpenPanel").addEventListener("click", async () => {
+  const url = location.protocol + "//" + location.host + "/";
+  let w = null;
+  try { w = window.open(url, "_blank"); } catch (_) { w = null; }
+  if (w) { try { w.focus(); } catch (_) {} return; }
+  const ok = await copyText(url);
+  notice(ok ? "没弹出浏览器 — 管理台网址已复制, 请粘贴到浏览器地址栏打开"
+            : "没弹出浏览器, 网址也没复制上 — 请手动输入: " + url, ok ? "ok" : "err");
+});
+
+/* ================= 设置弹窗 (FR-14 主题 + FR-13 管理台网址) =================
+   主题 = 后端落盘的 themes/<name>.css (只覆盖 :root 令牌), UI 只管切换: 动态 <link>
+   换 href 即无刷新换肤; 选择记 localStorage("sh_theme"), 启动时 <head> 已预挂 (防闪白)。
+   管理台网址改址走两段确认, POST /api/manager/addr 成功后自动跟随新网址 (2s 探测兜底)。 */
+const THEME_KEY = "sh_theme";
+/* 波3 (UX P1-2): 真后端内置第三主题文件名是 example-oreo; 键补齐, 下拉不露英文 ID */
+const THEME_LABEL = { light: "浅色", dark: "深色", oreo: "示例·奥利奥", "example-oreo": "示例·奥利奥" };
+let themeNow = null;                 /* 当前已应用 (或正在应用) 的主题名 */
+let managerAddr = location.host;     /* 管理台当前网址 (IP:端口), 改址成功后更新 */
+try { themeNow = localStorage.getItem(THEME_KEY); } catch (_) {}
+const dlgSettings = $("dlgSettings");
+
+function themeLink() {
+  let l = document.getElementById("themeCss");
+  if (!l) {
+    l = document.createElement("link");
+    l.id = "themeCss"; l.rel = "stylesheet";
+    document.head.appendChild(l);
+  }
+  return l;
+}
+function applyTheme(name, remember) {
+  const l = themeLink();
+  l.onload = refreshSparkColors;      /* 令牌就位后火花线方向色重读重绘 */
+  l.onerror = () => notice("主题「" + (THEME_LABEL[name] || name) + "」没加载出来 — 请确认程序 themes 目录里有这个文件", "err");
+  l.href = "/themes/" + encodeURIComponent(name) + ".css";
+  themeNow = name;
+  if (remember) { try { localStorage.setItem(THEME_KEY, name); } catch (_) {} }
+  setTimeout(refreshSparkColors, 600); /* 兜底: onload 偶发先于挂接已触发 */
+}
+function fillThemeSelect(list) {
+  const sel = $("setTheme");
+  let names = [];
+  for (const t of list || []) {
+    const name = typeof t === "string" ? t : (t && t.name) || "";
+    if (name) names.push(name);
+  }
+  if (!names.length) names = [themeNow || "light"];
+  sel.innerHTML = "";
+  for (const n of names) sel.appendChild(new Option(THEME_LABEL[n] || n, n));
+  /* 波3 (UX P1-1): 下拉必须反映真实生效主题 —— 无记忆时页面就是内置浅色,
+     不能留在列表第一项 (真后端字典序 dark 在前, 首项显示会骗人) */
+  const cur = themeNow || "light";
+  if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
+  else if (sel.options.length) sel.selectedIndex = 0;
+}
+async function loadThemeList() {
+  const slot = $("setErrTheme");
+  slot.hidden = true; slot.textContent = "";
+  try {
+    const j = await api("/api/themes");
+    fillThemeSelect(j.themes || []);
+  } catch (e) {
+    fillThemeSelect([]);
+    slot.textContent = "主题列表没取到 (" + e.message + "), 暂时只能保持当前主题";
+    slot.hidden = false;
+  }
+}
+function setErr(msg) {
+  const el = $("setErr");
+  if (msg) { el.textContent = msg; el.classList.add("show"); }
+  else el.classList.remove("show");
+}
+function setFieldErr(slotId, msg) {
+  for (const id of ["setErrTheme", "setErrAddr"]) { $(id).hidden = true; $(id).textContent = ""; }
+  if (slotId) { $(slotId).textContent = msg; $(slotId).hidden = false; }
+}
+function syncApplyBtn() {
+  const b = $("btnSetApply");
+  if (b.dataset.busy === "1") return;
+  b.dataset.armed = "0";
+  b.textContent = "应用";
+  b.classList.remove("armed");
+  b.disabled = $("setAddr").value.trim() === managerAddr;
+}
+function openSettings() {
+  setErr(null); setFieldErr(null);
+  $("setAddr").classList.remove("invalid");
+  $("setAddr").value = managerAddr;
+  fillThemeSelect([]);                /* 先摆当前主题, 列表异步补齐 */
+  loadThemeList();
+  dlgSettings.showModal();
+  syncApplyBtn();
+  $("setTheme").focus();
+}
+/* 改址两段确认 (UI-0 同款): 首点校验+预告后果, 3s 不确认自动复原; 再点才提交 */
+async function applyManagerAddr() {
+  const b = $("btnSetApply");
+  if (b.disabled) return;
+  const target = $("setAddr").value.trim();
+  if (b.dataset.armed !== "1") {
+    const chk = validateListen($("setAddr"));
+    if (chk.err) {
+      setFieldErr("setErrAddr", chk.err);
+      $("setAddr").classList.add("invalid");
+      $("setAddr").focus();
+      return;
+    }
+    b.dataset.armed = "1";
+    b.textContent = "确认修改?";
+    b.classList.add("armed");
+    notice("管理台网址将从 " + managerAddr + " 改为 " + target + "; 串口不受影响, 本页将自动跳到新网址。再点一次「确认修改?」。", "err");
+    clearTimeout(applyManagerAddr._t);
+    applyManagerAddr._t = setTimeout(syncApplyBtn, 3000);
+    return;
+  }
+  clearTimeout(applyManagerAddr._t);
+  b.dataset.armed = "0"; b.dataset.busy = "1";
+  b.disabled = true; b.textContent = "正在切换…";
+  setFieldErr(null); setErr(null);
+  try {
+    const j = await api("/api/manager/addr", { addr: target });
+    const newAddr = (j && typeof j.addr === "string" && j.addr) ? j.addr : target;
+    managerAddr = newAddr;
+    notice("网址已改好, 正在跳到新网址 http://" + newAddr + "/ — 串口不受影响", "ok");
+    await followNewAddr(newAddr);
+  } catch (e) {
+    setFieldErr("setErrAddr", "没改成功: " + e.message + " — 管理台仍在原网址 " + managerAddr);
+    notice("改管理台网址没成功: " + e.message, "err");
+  } finally {
+    b.dataset.busy = "0";
+    $("setAddr").value = managerAddr; /* 失败回显原址; 成功但没跳走时对齐新址 */
+    syncApplyBtn();
+  }
+}
+/* 跟随新网址: 先探后跳 (2s 兜底) —— 探通了才 location.replace; 探不通明示留在本页 */
+function followNewAddr(newAddr) {
+  const target = "http://" + newAddr + "/";
+  const probe = new Promise((res) => {
+    const ctl = new AbortController();
+    const t = setTimeout(() => { ctl.abort(); res(false); }, 2000);
+    fetch("http://" + newAddr + "/", { mode: "no-cors", cache: "no-store", signal: ctl.signal })
+      .then(() => { clearTimeout(t); res(true); })
+      .catch(() => { clearTimeout(t); res(false); });
+  });
+  return probe.then((ok) => {
+    if (ok) { try { location.replace(target); return true; } catch (_) { return false; } }
+    notice("新网址 2 秒内没应答, 本页留在原网址没跳 — 桥和串口不受影响; 请稍后手动打开 " + target, "err");
+    return false;
+  });
+}
+
 /* ================= 事件绑定 ================= */
 $("btnNew").addEventListener("click", openNew);
 $("btnNew2").addEventListener("click", openNew);
@@ -1417,11 +1643,28 @@ $("btnCfScan").addEventListener("click", () => scanInto($("cfPort")));
 $("btnCfSave").addEventListener("click", saveCfg);
 ["cfBaud", "cfListen"].forEach((id) => $(id).addEventListener("input", () => { $(id).classList.remove("invalid"); updateCfDerived(); }));
 ["cfData", "cfParity", "cfStop", "cfFlow", "cfMax", "cfPort", "cfAuto"].forEach((id) => $(id).addEventListener("change", updateCfDerived));
-$("btnCfCopyCmd").addEventListener("click", () => copyText($("cfEquiv").textContent, $("btnCfCopyCmd"), "📋 复制"));
+$("btnCfCopyCmd").addEventListener("click", () => copyText($("cfEquiv").textContent, $("btnCfCopyCmd")));
 $("btnCfCopyUrl").addEventListener("click", () => copyText($("cfDataUrl").textContent, $("btnCfCopyUrl")));
 
 $("btnCopyUrl").addEventListener("click", () => copyText($("consoleUrl").textContent, $("btnCopyUrl")));
 $("btnDrCopyUrl").addEventListener("click", () => copyText($("drDataUrl").textContent, $("btnDrCopyUrl")));
+
+/* 设置弹窗: 主题选即生效; 网址改动解除确认态并联动应用钮 */
+$("btnSettings").addEventListener("click", openSettings);
+$("btnSetCancel").addEventListener("click", () => dlgSettings.close());
+$("btnSetX").addEventListener("click", () => dlgSettings.close());
+dlgSettings.addEventListener("cancel", () => dlgSettings.close());
+dlgSettings.addEventListener("close", () => { setErr(null); setFieldErr(null); });
+$("btnSetApply").addEventListener("click", applyManagerAddr);
+$("setTheme").addEventListener("change", () => {
+  const n = $("setTheme").value;
+  if (n && n !== themeNow) applyTheme(n, true);
+});
+$("setAddr").addEventListener("input", () => {
+  $("setAddr").classList.remove("invalid");
+  setFieldErr(null); setErr(null);
+  syncApplyBtn();
+});
 
 $("btnClear").addEventListener("click", clearTerm);
 $("btnPause").addEventListener("click", () => {
@@ -1443,6 +1686,11 @@ function toggleSeg(onId, offId) {
 
 /* ================= 启动 ================= */
 $("consoleUrl").textContent = location.protocol + "//" + location.host;
+{
+  const boot = document.getElementById("themeCss"); /* <head> 预挂的主题 link: 补接 onload */
+  if (boot) boot.onload = refreshSparkColors;
+}
+refreshSparkColors(); /* 启动即按当前主题取方向色 (浅色/深色都对) */
 poll();
 setInterval(poll, POLL_MS);
 </script>

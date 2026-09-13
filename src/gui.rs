@@ -34,6 +34,8 @@ use crate::supervisor::HubCmd;
 pub enum UserEvent {
     /// 相位或端口变化 (托盘图标/tooltip 刷新)。
     PhaseChanged { phase: Phase, port: String },
+    /// FR-13: 管理台地址原地换绑成功 —— webview 导航到新地址 (页面跟随闭环壳侧)。
+    AddrChanged { addr: SocketAddr },
     ShowWindow,
     OpenPort,
     ClosePort,
@@ -69,8 +71,12 @@ pub fn run_gui(cli: Cli) -> Result<(), String> {
     let startup: ManagerStartup = ManagerStartup::from_cli(&cli);
     let port0 = cli.port.clone().unwrap_or_default(); // 托盘 tooltip 初值
     let proxy_for_service = proxy.clone();
-    let ready_tx2 = ready_tx.clone();  // 给 on_event (Ready)
+    let ready_tx2 = ready_tx.clone();  // 给 on_event (首次 Ready)
     let ready_tx3 = ready_tx.clone();  // 给 block_on 的 Err 回传
+    // FR-13: Ready 事件分流 —— 首次 = 服务就绪 (ready 通道握手);
+    // 之后每次 = 管理台原地换绑成功 → 主线程 webview 导航跟随新地址。
+    let first_ready = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let first_ready_for_service = first_ready.clone();
     let service_thread = std::thread::Builder::new()
         .name("serialhub-service".into())
         .spawn(move || {
@@ -84,7 +90,11 @@ pub fn run_gui(cli: Cli) -> Result<(), String> {
             let on_event: crate::service::OnEvent = Arc::new(move |ev: ServiceEvent| {
                 let ue = match ev {
                     ServiceEvent::Ready(addr) => {
-                        let _ = ready_tx2.send(Ok(addr));
+                        if first_ready_for_service.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                            let _ = ready_tx2.send(Ok(addr));
+                        } else {
+                            let _ = proxy_for_service.send_event(UserEvent::AddrChanged { addr });
+                        }
                         return;
                     }
                     ServiceEvent::Phase(phase, port) => UserEvent::PhaseChanged { phase, port },
@@ -114,15 +124,19 @@ pub fn run_gui(cli: Cli) -> Result<(), String> {
     };
 
     // —— 主窗口: WebView 内嵌现有控制台 ——
+    // FR-15: 窗口图标 = app.ico 内最大 PNG (构建期解码); 资产缺失 → 程序画的圆点
     let window = WindowBuilder::new()
         .with_title("SerialHub")
         .with_inner_size(tao::dpi::LogicalSize::new(1120.0, 780.0))
         .with_min_inner_size(tao::dpi::LogicalSize::new(640.0, 480.0))
-        .with_window_icon(Some(tao_icon(DOT_CLOSED)))
+        .with_window_icon(Some(tao_icon_any(
+            crate::icons::WINDOW_ICON_RGBA,
+            DOT_CLOSED,
+        )))
         .build(&event_loop)
         .map_err(|e| format!("创建窗口失败: {e}"))?;
 
-    let _webview = match wry::WebViewBuilder::new()
+    let webview = match wry::WebViewBuilder::new()
         .with_url(format!("http://{addr}/"))
         // FR-9a: 壳标记 —— 页面据此判断"运行在桌面壳内" (可自我重启);
         // 浏览器打开同一页面无此标记, /api/restart 控件自动禁用。
@@ -155,11 +169,12 @@ pub fn run_gui(cli: Cli) -> Result<(), String> {
     // FIX-12 三修: szTip 用静态文案且运行期绝不修改 —— UIA Name 拼接只发生在
     // "字符串可变"上 (NIM_MODIFY 换 szTip 会拼出 "旧 新"), 字符串恒定则无从发生。
     // 相位只用图标图像表达 (NIM_MODIFY 仅换 hIcon, UX 已验证该路径三色切换可靠)。
+    // FR-15: 图像源 = tray-closed.png 等交付资产 (构建期解码), 缺失 → 程序画的圆点。
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false) // 左键单击 = 显示主窗口 (右键 = 菜单)
         .with_tooltip(format!("SerialHub · {} · 状态见控制台", port0))
-        .with_icon(tray_icon(DOT_CLOSED))
+        .with_icon(tray_icon_any(crate::icons::TRAY_CLOSED_RGBA, DOT_CLOSED))
         .build()
         .map_err(mstr)?;
 
@@ -186,6 +201,7 @@ pub fn run_gui(cli: Cli) -> Result<(), String> {
 
     // —— 事件循环 (主线程; 绝不 await/block_on, 见模块头) ——
     let mut hidden_notified = false; // 首次关窗气泡只提示一次 (FR-8)
+    let mut cur_addr = addr; // FR-13: 随 AddrChanged 更新 (OpenBrowser 用现值)
     let mut quitting = false;
     let mut quit_deadline: Option<Instant> = None;
 
@@ -197,13 +213,24 @@ pub fn run_gui(cli: Cli) -> Result<(), String> {
                     // FIX-12 三修: 相位只经图标图像表达 —— NIM_MODIFY 仅换 hIcon
                     // (三色切换路径 UX 已实测可靠), szTip/条目身份终生不变。
                     // port 供日志/未来使用; UIA Name 恒为静态文案, 拼接无从发生。
+                    // FR-15: 托盘三态 = tray-open/retry/closed.png, 仅换图 (口径同上)。
                     let _ = port;
-                    let rgba = match phase {
-                        Phase::Open => DOT_OPEN,
-                        Phase::Opening | Phase::Retry => DOT_RETRY,
-                        Phase::Closed => DOT_CLOSED,
+                    let (src, fallback) = match phase {
+                        Phase::Open => (crate::icons::TRAY_OPEN_RGBA, DOT_OPEN),
+                        Phase::Opening | Phase::Retry => {
+                            (crate::icons::TRAY_RETRY_RGBA, DOT_RETRY)
+                        }
+                        Phase::Closed => (crate::icons::TRAY_CLOSED_RGBA, DOT_CLOSED),
                     };
-                    let _ = tray.set_icon(Some(tray_icon(rgba)));
+                    let _ = tray.set_icon(Some(tray_icon_any(src, fallback)));
+                }
+                UserEvent::AddrChanged { addr } => {
+                    // FR-13 壳侧跟随闭环: 管理台原地换绑成功 → webview 导航新地址
+                    // (浏览器页侧跟随是前端的事; 串口会话/托盘/窗口全程不动)
+                    cur_addr = addr;
+                    if let Err(e) = webview.load_url(&format!("http://{addr}/")) {
+                        eprintln!("serialhub: webview 跟随新地址失败: {e}");
+                    }
                 }
                 UserEvent::ShowWindow => {
                     window.set_visible(true);
@@ -216,7 +243,7 @@ pub fn run_gui(cli: Cli) -> Result<(), String> {
                     let _ = cmd_tx.send(HubCmd::Close);
                 }
                 UserEvent::OpenBrowser => {
-                    open_in_browser(&format!("http://{addr}/"));
+                    open_in_browser(&format!("http://{cur_addr}/"));
                 }
                 UserEvent::Stopped => {
                     // 服务清理完毕 (串口线程已退出), 真正结束进程
@@ -254,7 +281,7 @@ pub fn run_gui(cli: Cli) -> Result<(), String> {
                 ..
             } => {
                 // wry 0.57 build(&window) 已随窗口自适应, 此处仅保底触发一次重排
-                let _ = _webview.bounds();
+                let _ = webview.bounds();
             }
             Event::NewEvents(StartCause::Poll) => {
                 // 退出兜底: Stopped 事件 3s 内未到 (异常) 也强制退出
@@ -305,6 +332,30 @@ fn tray_icon(c: Rgba) -> tray_icon::Icon {
 
 fn tao_icon(c: Rgba) -> TaoIcon {
     TaoIcon::from_rgba(dot_rgba(c), 32, 32).expect("固定 32×32 RGBA 不会失败")
+}
+
+/// FR-15: 优先用构建期解码的交付图标 (原始 RGBA); 尺寸/长度不符或资产缺失 →
+/// 程序画的圆点回退。托盘与窗口共用该装配口径。
+fn tray_icon_any(src: Option<crate::icons::RgbaIcon>, fallback: Rgba) -> tray_icon::Icon {
+    if let Some((bytes, w, h)) = src {
+        if bytes.len() == (w as usize) * (h as usize) * 4 {
+            if let Ok(icon) = tray_icon::Icon::from_rgba(bytes.to_vec(), w, h) {
+                return icon;
+            }
+        }
+    }
+    tray_icon(fallback)
+}
+
+fn tao_icon_any(src: Option<crate::icons::RgbaIcon>, fallback: Rgba) -> TaoIcon {
+    if let Some((bytes, w, h)) = src {
+        if bytes.len() == (w as usize) * (h as usize) * 4 {
+            if let Ok(icon) = TaoIcon::from_rgba(bytes.to_vec(), w, h) {
+                return icon;
+            }
+        }
+    }
+    tao_icon(fallback)
 }
 
 /// 首次关窗气泡 (FR-8): tray-icon 无气泡 API, 直接对托盘图标 NIM_MODIFY + NIF_INFO。

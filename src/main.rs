@@ -12,10 +12,12 @@ mod config;
 mod fleet;
 mod gui;
 mod hub;
+mod icons;
 mod serial;
 mod service;
 mod stats;
 mod supervisor;
+mod themes;
 
 use cli::Cli;
 use supervisor::HubCmd;

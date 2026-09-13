@@ -72,6 +72,9 @@ asyncio.run(main())
 
 控制面走 `/api/*` (JSON), 与数据面彻底分离, 端点表见[用户手册 API 摘要](docs/manual/用户使用手册.md#八api-摘要)。
 
+可直接跑的最小接入示例见 [`examples/`](examples/) (零依赖网页客户端 + Python 客户端),
+配套五步教程见[用户手册「最小示例」](docs/manual/用户使用手册.md#最小示例-examples)。
+
 ## 文档
 
 - [用户使用手册](docs/manual/用户使用手册.md) — 安装、五分钟上手、界面详解、命令行参考、程序接入、故障排查

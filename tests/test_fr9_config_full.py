@@ -127,8 +127,11 @@ def test_fr9a_restart_e2e(make_peer):
     WS→串口数据面继续可用 (经 COM1 对端逐字节验证)。"""
     peer = make_peer(port_name="COM1", baud=115200, parity="N")    # 对端 COM1 (桥在 COM2)
     log = open(S3_OLD_LOG, "w")
+    # --no-fleet (Sprint 7 收口加): FR-13 起老式进程会把 manager addr/桥持久化到全局
+    # fleet.json 且启动时恢复既有桥 —— 全局清单一旦混入非测试桥即 409 污染本用例。
+    # 换绑机制被测行为不受该开关影响 (沿 conftest start_bridge 老式语义)。
     p_old = subprocess.Popen([EXE, "--port", "COM2", "--addr", "127.0.0.1:8081",
-                              "--max-clients", "3", "--flow", "xonxoff"],
+                              "--max-clients", "3", "--flow", "xonxoff", "--no-fleet"],
                              stdout=log, stderr=subprocess.STDOUT)
     try:
         st = wait_status(8081)
@@ -223,7 +226,7 @@ def test_fr2_flow_xonxoff_loopback(start_bridge, make_peer):
 def test_fr2_flow_bogus_rejected():
     """FR-2 对等 (ADR-10): --flow bogus 拒绝启动 (退出码非 0)。"""
     port = free_tcp_port()
-    p = subprocess.Popen([EXE, "--headless", "--port", "COM1", "--addr",
+    p = subprocess.Popen([EXE, "--headless", "--no-fleet", "--port", "COM1", "--addr",
                           f"127.0.0.1:{port}", "--flow", "bogus"],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     deadline = time.monotonic() + 5

@@ -13,7 +13,8 @@
  *   - 自拉真后端 (target/release/serialhub.exe, 默认 127.0.0.1:8080, 临时 fleet 清单);
  *   - 经控制台 API 建一座桥 (COM1) 并启动, 等 phase=open —— "开着桥";
  *   - Playwright 无头 Chromium 走五轮真实页面态, 各截图一轮:
- *       R1 仪表盘 (开着桥) / R2 新建桥弹窗 / R3 抽屉·设置 / R4 抽屉·串口数据 / R5 抽屉·统计;
+ *       R1 仪表盘 (开着桥) / R2 新建桥弹窗 / R3 抽屉·设置 / R4 抽屉·串口数据 / R5 抽屉·统计
+ *       + R6 设置弹窗 / R7 设置弹窗·深色 (Sprint 7 收口 QA 扩轮: FR-13/14 新控件入审计口径);
  *   - 每轮收集页面全部 button/input/select (可见者): getBoundingClientRect().height
  *     + 四角 computed border-radius; 隐藏/零尺寸/opacity:0 元素记 skipped, 不算违例;
  *   - 输出违例清单表格 (轮次/选择器/实测高度/实测圆角/违约原因); 全过 → PASS。
@@ -261,6 +262,24 @@ const STRIP_JS = () => {
     await audit("R4-抽屉·串口数据", "ui-audit-4-drawer-tap.png");
     await page.click("#tb-stats");
     await audit("R5-抽屉·统计", "ui-audit-5-drawer-stats.png");
+
+    // R6 设置弹窗 (Sprint 7 FR-13/14, QA 收口扩轮): 主题选择器 + 管理台网址 +
+    //   应用/取消/关闭钮; 页头「打开面板」「设置」钮在每轮全量收集里已覆盖。
+    //   先 reload 隔离 R5 的抽屉态, 保证本轮所见即"纯设置弹窗"。
+    await page.reload();
+    await page.waitForTimeout(500);
+    await page.click("#btnSettings");
+    await page.waitForSelector("#dlgSettings[open]", { timeout: 5000 });
+    await audit("R6-设置弹窗", "ui-audit-6-settings.png");
+    // R7 设置弹窗·深色 (FR-14 无刷新换肤后同口径复测; 兼作深色主题冒烟截图)
+    await page.selectOption("#setTheme", "dark");
+    await page.waitForFunction(() => {
+      const l = document.getElementById("themeCss");
+      return !!l && (l.href || "").includes("/themes/dark.css");
+    }, { timeout: 5000 });
+    await page.waitForTimeout(300);                       // 换肤渲染落定
+    await audit("R7-设置弹窗·深色", "ui-audit-7-settings-dark.png");
+    await page.click("#btnSetX");
 
     await browser.close();
 
