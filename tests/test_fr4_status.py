@@ -16,17 +16,19 @@ from conftest import (STATUS_FIELDS, join_collectors, read_exactly,
 
 
 def test_fr4_status_contract(start_bridge, make_peer):
-    """/api/status 恰 9 字段 (①), 初始计数与相位合理, uptimeSec 随进程时间增长 (②)。"""
+    """/api/status 恰 10 字段 (ADR-9 ① 修订 ADR-5 ①), 初始计数与相位合理, uptimeSec 随进程时间增长 (②)。"""
     b = start_bridge()
     st = b.status()
     assert set(st.keys()) == STATUS_FIELDS, (
-        f"ADR-5 ① 字段集合不符: 多 {set(st) - STATUS_FIELDS}, "
+        f"ADR-9 ① 字段集合不符: 多 {set(st) - STATUS_FIELDS}, "
         f"少 {STATUS_FIELDS - set(st)}")
     assert isinstance(st["phase"], str)
     assert isinstance(st["port"], str) and st["port"] == "COM1"
     assert st["baud"] == 115200
     assert st["config"] == "8N2"
     assert st["clients"] == 0
+    assert st["maxClients"] == 0, \
+        f"maxClients 默认应为 0 (不限, ADR-9 ①): 实得 {st['maxClients']!r}"
     assert st["rxBytes"] == 0 and st["txBytes"] == 0, \
         f"初始计数应为 0: rxBytes={st['rxBytes']}, txBytes={st['txBytes']}"
     assert st["lastError"] in (None, ""), f"无错时 lastError={st['lastError']!r}"

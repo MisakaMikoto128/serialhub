@@ -50,6 +50,8 @@ impl Phase {
 struct Inner {
     phase: Phase,
     cfg: SerialConfig,
+    /// FR-9b: 最大客户端数, 0 = 不限。超限的新 WS 以 close 1013 拒绝 (ADR-9③)。
+    max_clients: u32,
     clients: usize,
     rx_bytes: u64,
     tx_bytes: u64,
@@ -62,12 +64,13 @@ pub struct HubState {
 }
 
 impl HubState {
-    pub fn new(cfg: SerialConfig) -> Self {
+    pub fn new(cfg: SerialConfig, max_clients: u32) -> Self {
         Self {
             started: Instant::now(),
             inner: RwLock::new(Inner {
                 phase: Phase::Closed,
                 cfg,
+                max_clients,
                 clients: 0,
                 rx_bytes: 0,
                 tx_bytes: 0,
@@ -95,6 +98,21 @@ impl HubState {
 
     pub fn update_config(&self, cfg: SerialConfig) {
         w(&self.inner).cfg = cfg;
+    }
+
+    // ---- FR-9b: 最大客户端数 ----
+
+    pub fn max_clients(&self) -> u32 {
+        r(&self.inner).max_clients
+    }
+
+    pub fn set_max_clients(&self, n: u32) {
+        w(&self.inner).max_clients = n;
+    }
+
+    /// 当前客户端数 (WS 拒连判断用)。
+    pub fn client_count(&self) -> usize {
+        r(&self.inner).clients
     }
 
     // ---- 计数器 ----
@@ -142,7 +160,9 @@ impl HubState {
             port: g.cfg.port.clone(),
             baud: g.cfg.baud,
             config: g.cfg.config_str(),
+            flow: g.cfg.flow.as_str(),
             clients: g.clients,
+            max_clients: g.max_clients,
             rx_bytes: g.rx_bytes,
             tx_bytes: g.tx_bytes,
             last_error: g.last_error.clone(),
@@ -158,7 +178,11 @@ pub struct StatusJson {
     pub port: String,
     pub baud: u32,
     pub config: String,
+    /// ADR-11: flow 回显 (CLI/UI 双入口对等, 根治 UI 重开静默降级)。
+    pub flow: &'static str,
     pub clients: usize,
+    #[serde(rename = "maxClients")]
+    pub max_clients: u32,
     #[serde(rename = "rxBytes")]
     pub rx_bytes: u64,
     #[serde(rename = "txBytes")]
@@ -172,13 +196,13 @@ pub struct StatusJson {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Parity;
+    use crate::config::{Flow, Parity};
     use std::collections::HashSet;
 
     fn hub_with_com1() -> HubState {
         let mut cfg = SerialConfig::default();
         cfg.port = "COM1".into();
-        HubState::new(cfg)
+        HubState::new(cfg, 0)
     }
 
     #[test]
@@ -186,13 +210,15 @@ mod tests {
         let hub = hub_with_com1();
         let v = serde_json::to_value(hub.status_json()).unwrap();
         let obj = v.as_object().unwrap();
-        // 契约: 恰好这 9 个字段 (QA 按字段名断言)
+        // 契约 (ADR-11 修订 ADR-9①): 恰好这 11 个字段 (QA 按字段名断言)
         let want: HashSet<&str> = [
             "phase",
             "port",
             "baud",
             "config",
+            "flow",
             "clients",
+            "maxClients",
             "rxBytes",
             "txBytes",
             "lastError",
@@ -206,11 +232,43 @@ mod tests {
         assert_eq!(v["port"], "COM1");
         assert_eq!(v["baud"], 115200);
         assert_eq!(v["config"], "8N2");
+        assert_eq!(v["flow"], "none");
         assert_eq!(v["clients"], 0);
+        assert_eq!(v["maxClients"], 0);
         assert_eq!(v["rxBytes"], 0);
         assert_eq!(v["txBytes"], 0);
         assert!(v["lastError"].is_null());
         assert_eq!(v["uptimeSec"], 0);
+    }
+
+    #[test]
+    fn flow_echo_in_status() {
+        // ADR-11: flow 回显 —— CLI/UI 任一入口设置后, status 必须如实反映
+        // (根治 "CLI 设 xonxoff → UI 重开静默降级为 none")。
+        let hub = hub_with_com1();
+        let mut cfg = hub.config();
+        cfg.flow = Flow::XonXoff;
+        hub.update_config(cfg);
+        assert_eq!(hub.status_json().flow, "xonxoff");
+        let mut cfg = hub.config();
+        cfg.flow = Flow::RtsCts;
+        hub.update_config(cfg);
+        assert_eq!(hub.status_json().flow, "rtscts");
+    }
+
+    #[test]
+    fn max_clients_roundtrip() {
+        // FR-9b: 默认 0 = 不限; /api/config 设置后 status 回显, 供 WS 拒连判断
+        let hub = hub_with_com1();
+        assert_eq!(hub.max_clients(), 0);
+        assert_eq!(hub.client_count(), 0);
+        hub.set_max_clients(3);
+        assert_eq!(hub.max_clients(), 3);
+        assert_eq!(hub.status_json().max_clients, 3);
+        hub.client_inc();
+        hub.client_inc();
+        hub.client_inc();
+        assert_eq!(hub.client_count(), 3);
     }
 
     #[test]

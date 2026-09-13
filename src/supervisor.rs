@@ -199,7 +199,7 @@ mod tests {
     }
 
     fn test_ctx() -> (Arc<HubState>, PortCtx) {
-        let hub = Arc::new(HubState::new(SerialConfig::default()));
+        let hub = Arc::new(HubState::new(SerialConfig::default(), 0));
         let ctx = PortCtx {
             hub: hub.clone(),
             bc_tx: broadcast::channel(16).0,

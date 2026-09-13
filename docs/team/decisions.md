@@ -50,3 +50,18 @@ tray-icon 托盘, 内嵌**同一个** ui/index.html —— 不养第二套界面
 UX Sprint2 发现托盘菜单在自动化注入下不可达 (真人是否可达待人工复核)。裁定: 优雅退出**不允许只有一条路** ——
 ① 托盘菜单「退出」; ② 控制台页内「退出程序」按钮 → 新契约端点 `POST /api/shutdown`
 (与托盘退出同一停机序列); ③ 兜底任务管理器。GUI bind 失败改为 MessageBox 明示 (双击用户可见)。
+
+## ADR-9 配置对等与契约修订 (2026-09-12, 架构师)
+
+① status 契约 9→10 字段: 新增 `maxClients` (FR-9b), 修订 ADR-5① —— QA 字段集断言同步;
+② GUI 改 addr = 自我重启 (spawn 同 exe + 优雅退旧, 新实例 bind 重试 ≤2s 平滑交接);
+   headless 无壳不自起, UI 明示需手动重启;
+③ WS 超限拒连用 close code 1013 (Try Again Later);
+④ /ws 路径维持固定 /ws 不做配置项 (契约稳定, 现实无人要改); i18n 英文界面入 Sprint 候选池。
+
+## ADR-11 flow 回显入契约 (2026-09-12, 架构师)
+
+Sprint1 曾裁"status 不加 flow" (契约稳定优先); Sprint3 双入口走查实证: 无回显时 UI 一次普通
+开关就把 CLI 配的 xonxoff 静默降级为 none —— 对等性破缺比契约膨胀更伤。裁定: status 契约
+10→11 字段 (新增 flow), UI 流控以服务端回显为准, 打开动作显式携带表单 flow。本条同时修正
+ADR-5① 的"恰好 9 字段"表述 (现行为 11 字段: 原始 9 + maxClients + flow)。

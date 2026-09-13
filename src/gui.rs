@@ -122,6 +122,9 @@ pub fn run_gui(cli: Cli) -> Result<(), String> {
 
     let _webview = match wry::WebViewBuilder::new()
         .with_url(format!("http://{addr}/"))
+        // FR-9a: 壳标记 —— 页面据此判断"运行在桌面壳内" (可自我重启);
+        // 浏览器打开同一页面无此标记, /api/restart 控件自动禁用。
+        .with_initialization_script("window.__SERIALHUB_SHELL = true;")
         .build(&window)
     {
         Ok(w) => w,

@@ -34,8 +34,8 @@ BRIDGE_COM = "COM1"  # 桥侧 (硬约束: 测试只许用 COM1/COM2)
 PEER_COM = "COM2"    # pyserial 对端
 HTTP_HOST = "127.0.0.1"
 
-# ADR-5 ①: /api/status 恰好 9 字段, 不含 flow
-STATUS_FIELDS = {"phase", "port", "baud", "config", "clients",
+# ADR-9 ① (修订 ADR-5 ①): /api/status 恰好 10 字段 (新增 maxClients), 不含 flow
+STATUS_FIELDS = {"phase", "port", "baud", "config", "clients", "maxClients",
                  "rxBytes", "txBytes", "lastError", "uptimeSec"}
 
 
@@ -193,12 +193,16 @@ def start_bridge():
     started: list[Bridge] = []
 
     def _start(port_name=BRIDGE_COM, baud=115200, config="8N2",
-               extra=None, wait=True) -> Bridge:
+               flow=None, max_clients=None, extra=None, wait=True) -> Bridge:
         http_port = free_tcp_port()
         # Sprint 2 起二进制默认 GUI 模式; 套件要旧行为 (无窗口), 统一加 --headless
         cmd = [str(BRIDGE_EXE), "--headless"]
         if port_name is not None:
             cmd += ["--port", port_name, "--baud", str(baud), "--config", config]
+            if flow is not None:
+                cmd += ["--flow", flow]                      # ADR-10: flow 入 CLI
+            if max_clients is not None:
+                cmd += ["--max-clients", str(max_clients)]   # FR-9b
         cmd += ["--addr", f"{HTTP_HOST}:{http_port}"]
         if extra:
             cmd += extra
@@ -225,9 +229,9 @@ def make_peer():
     """pyserial 对端工厂 (占 COM2), teardown 统一关闭。"""
     opened = []
 
-    def _open(baud=115200, bytesize=8, parity="N", stopbits=1,
+    def _open(port_name=PEER_COM, baud=115200, bytesize=8, parity="N", stopbits=1,
               timeout=3.0, write_timeout=30.0) -> serial.Serial:
-        ser = serial.Serial(port=PEER_COM, baudrate=baud, bytesize=bytesize,
+        ser = serial.Serial(port=port_name, baudrate=baud, bytesize=bytesize,
                             parity={"N": serial.PARITY_NONE,
                                     "E": serial.PARITY_EVEN,
                                     "O": serial.PARITY_ODD}[parity],

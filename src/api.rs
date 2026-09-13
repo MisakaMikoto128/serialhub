@@ -8,9 +8,11 @@
 //!   clients 计数用 Drop 兜底, 即使任务被取消也不会漏减。
 
 use axum::extract::rejection::JsonRejection;
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::http::StatusCode;
+use std::net::SocketAddr;
+use std::sync::Arc;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -31,6 +33,10 @@ pub struct App {
     pub cmd_tx: UnboundedSender<HubCmd>,
     /// 停机开关 (ADR-8): /api/shutdown 与托盘「退出」共用同一 watch。
     pub shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// FR-9a: 是否 GUI 壳 (决定 /api/restart 是否可用)。
+    pub gui: bool,
+    /// FR-9a: 自我重启目标地址槽 (/api/restart 登记, finalize_shutdown 消费)。
+    pub restart_to: Arc<std::sync::Mutex<Option<String>>>,
     pub index: &'static str,
 }
 
@@ -43,6 +49,7 @@ pub fn router(app: App) -> Router {
         .route("/api/open", post(open))
         .route("/api/close", post(close))
         .route("/api/shutdown", post(shutdown))
+        .route("/api/restart", post(restart))
         .route("/ws", get(ws_upgrade))
         .with_state(app)
 }
@@ -88,6 +95,9 @@ struct ConfigReq {
     #[serde(rename = "stopBits")]
     stop_bits: Option<u8>,
     flow: Option<String>,
+    /// FR-9b: 最大客户端数, 0 = 不限。
+    #[serde(rename = "maxClients")]
+    max_clients: Option<u32>,
 }
 
 /// 全字段可省: 只更新给出的字段 (方便部分修改); 校验失败整体拒绝, 不做半套更新。
@@ -130,6 +140,9 @@ async fn set_config(State(app): State<App>, body: Result<Json<ConfigReq>, JsonRe
             Err(e) => return bad(e),
         }
     }
+    if let Some(m) = req.max_clients {
+        app.ctx.hub.set_max_clients(m); // 0 = 不限, 无上限校验 (u32)
+    }
     app.ctx.hub.update_config(cfg);
     ok()
 }
@@ -145,6 +158,36 @@ async fn open(State(app): State<App>) -> Response {
 
 async fn close(State(app): State<App>) -> Response {
     let _ = app.cmd_tx.send(HubCmd::Close);
+    ok()
+}
+
+/// FR-9a/ADR-9②: GUI 模式改 addr —— 校验并登记新地址后触发与托盘退出相同的
+/// 优雅停机; 真正的 spawn 在 finalize_shutdown 里、串口释放之后执行 (顺序原因见
+/// service.rs)。headless 模式拒绝: 无壳不自起, 提示"改地址请重启进程"。
+#[derive(Deserialize)]
+struct RestartReq {
+    addr: String,
+}
+
+async fn restart(State(app): State<App>, body: Result<Json<RestartReq>, JsonRejection>) -> Response {
+    if !app.gui {
+        return bad("headless 模式改地址请重启进程".into());
+    }
+    let Json(req) = match body {
+        Ok(b) => b,
+        Err(rej) => return bad(format!("请求体不是合法 JSON: {rej}")),
+    };
+    let new_addr: SocketAddr = match req.addr.trim().parse() {
+        Ok(a) => a,
+        Err(_) => {
+            return bad(format!(
+                "地址无效: \"{}\" (形如 127.0.0.1:8080)",
+                req.addr.trim()
+            ))
+        }
+    };
+    *crate::hub::lock_mutex(&app.restart_to) = Some(new_addr.to_string());
+    let _ = app.shutdown_tx.send(true);
     ok()
 }
 
@@ -170,7 +213,18 @@ async fn ws_upgrade(ws: WebSocketUpgrade, State(app): State<App>) -> Response {
     ws.on_upgrade(move |socket| client_loop(socket, app))
 }
 
-async fn client_loop(socket: WebSocket, app: App) {
+async fn client_loop(mut socket: WebSocket, app: App) {
+    // FR-9b: 握手后若客户端已满, 以 close 1013 (Try Again Later) 拒绝新连接,
+    // 且不计入 clients (未 client_inc); 老客户端不受影响。
+    let max = app.ctx.hub.max_clients();
+    if max > 0 && app.ctx.hub.client_count() >= max as usize {
+        let _ = socket.send(Message::Close(Some(CloseFrame {
+            code: 1013,
+            reason: "max clients".into(),
+        })))
+        .await;
+        return;
+    }
     app.ctx.hub.client_inc();
     struct DecOnDrop(PortCtx);
     impl Drop for DecOnDrop {

@@ -261,7 +261,7 @@ mod tests {
         use std::sync::mpsc;
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
         let ctx = PortCtx {
-            hub: Arc::new(HubState::new(SerialConfig::default())),
+            hub: Arc::new(HubState::new(SerialConfig::default(), 0)),
             bc_tx: broadcast::channel(16).0,
             tx_slot: Arc::new(Mutex::new(None)),
             active_stop: Arc::new(Mutex::new(None)),

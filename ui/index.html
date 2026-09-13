@@ -56,6 +56,11 @@ header .spacer{flex:1}
 .quit-btn:hover:not(:disabled){background:var(--err-bg);border-color:var(--err);color:var(--err-ink)}
 .quit-btn.armed{background:var(--err);border-color:var(--err);color:#fff}
 .quit-btn:disabled{opacity:.6}
+.equiv{margin-top:12px;border:1px solid var(--border);border-radius:4px;background:var(--panel-2);padding:6px 8px}
+.equiv-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
+.equiv-head .k{font-size:11px;color:var(--faint);letter-spacing:1px}
+.copy-btn{font-size:11px;padding:2px 8px}
+#equivCmd{display:block;font-family:var(--mono);font-size:12px;word-break:break-all;color:var(--ink)}
 .b-open{background:var(--ok-bg);color:var(--ok-ink)}
 .b-opening{background:var(--ok-bg);color:var(--ok-ink);animation:blink 1s steps(2,start) infinite}
 .b-retry{background:var(--warn-bg);color:var(--warn-ink)}
@@ -72,7 +77,9 @@ main{display:grid;grid-template-columns:340px minmax(0,1fr);gap:var(--gap);
 
 /* 连接面板表单 */
 .field{display:flex;align-items:center;gap:8px;margin-bottom:8px}
-.field>label{width:52px;flex:none;color:var(--muted);font-size:12px}
+.field>label{width:64px;flex:none;color:var(--muted);font-size:12px;white-space:nowrap}
+.field .ctl button{white-space:nowrap}
+#inAddr{flex:1;min-width:120px}
 .field .ctl{flex:1;display:flex;gap:6px;min-width:0}
 select,input[type=number],input[type=text]{background:var(--panel-2);border:1px solid var(--border-strong);
   border-radius:4px;padding:5px 8px;min-width:0}
@@ -138,7 +145,7 @@ footer{max-width:1440px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
 }
 @media (max-width:720px){
   header{padding:8px 12px}
-  .field>label{width:44px}
+  .field>label{width:56px}
 }
 </style>
 </head>
@@ -157,6 +164,14 @@ footer{max-width:1440px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
       <h2>连 接</h2>
       <div class="body">
         <div class="field">
+          <label for="inAddr">地址</label>
+          <div class="ctl">
+            <input id="inAddr" type="text" placeholder="127.0.0.1:8080" title="HTTP/WS 监听地址 (FR-9a)" />
+            <button id="btnRestart" type="button" title="以新地址重启桥 (仅桌面壳窗口可用, FR-9a)">应用并重启</button>
+          </div>
+        </div>
+        <div class="send-hint" id="restartHint"></div>
+        <div class="field">
           <label for="selPort">串口</label>
           <div class="ctl">
             <select id="selPort" title="选择串口"><option value="">(点击"扫描")</option></select>
@@ -173,6 +188,11 @@ footer{max-width:1440px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
             <option value="460800"></option><option value="921600"></option><option value="1000000"></option>
             <option value="2000000"></option>
           </datalist>
+        </div>
+        <div class="field">
+          <label for="inMaxClients">客户端上限</label>
+          <div class="ctl"><input id="inMaxClients" type="number" min="0" step="1" value="0"
+            title="0 = 不限; 超限的新连接以 close 1013 拒绝 (FR-9b)" /></div>
         </div>
         <fieldset id="cfgParams" style="border:none;margin:0;padding:0">
           <div class="param-row">
@@ -199,6 +219,12 @@ footer{max-width:1440px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
           <div class="stat"><div class="k">运行</div><div class="v" id="stUptime">0:00:00</div></div>
         </div>
         <div id="errorLine" class="error-line" title="最近一次错误 (lastError / 本地校验错误)"></div>
+        <div class="equiv">
+          <div class="equiv-head"><span class="k">等 价 CLI 命 令 (FR-9c)</span>
+            <button id="btnCopyCmd" type="button" class="copy-btn" title="复制等价命令到剪贴板">📋 复制</button></div>
+          <code id="equivCmd"></code>
+          <div class="send-hint" id="equivHint">与当前控制台配置完全等价; headless (无窗口) 场景请追加 --headless</div>
+        </div>
       </div>
     </section>
   </div>
@@ -257,6 +283,9 @@ let phase = "closed";
 let ws = null;
 let wsGen = 0; // FIX-11: WS 代次 (迟到事件守卫)
 let paused = false;
+let flowUserEdited = false; // FIX-17: 用户改过流控选择 → 服务端回显暂不覆盖
+let wsRejected = false;     // FIX-19: WS 被 1013 拒绝
+let quitBusy = false;       // FIX-20: 退出流程进行中 (防 applyStatus 重置按钮)
 let viewMode = "ascii";   // ascii | hex
 let sendMode = "text";    // text | hex
 let showTs = false;       // FIX-6 时间戳开关 (默认关 = UI-4 "可选")
@@ -333,6 +362,10 @@ function applyStatus(s) {
       $("selPort").value = s.port;
     }
     if (s.baud) $("inBaud").value = s.baud;
+    $("inMaxClients").value = s.maxClients; // FR-9b (ADR-9: 第 10 字段)
+    $("inAddr").value = location.host;      // FR-9a: 当前监听地址
+    $("selFlow").value = s.flow;            // FIX-17 (ADR-11: 第 11 字段, 回显根治静默降级)
+    flowUserEdited = false;
     const m = /^([78])([NEO])([12])$/.exec(s.config || "");
     if (m) {
       $("selData").value = m[1];
@@ -345,27 +378,73 @@ function applyStatus(s) {
   const cfgLocked = s.phase !== "closed";
   $("selPort").disabled = cfgLocked;
   $("inBaud").disabled = cfgLocked;
+  $("inMaxClients").disabled = cfgLocked;
   $("cfgParams").disabled = cfgLocked;
   $("btnScan").disabled = cfgLocked;
   $("btnOpen").disabled = cfgLocked || !$("selPort").value;
   $("btnClose").disabled = s.phase === "closed";
 
-  // 发送区: 仅在 phase=open 且 WS 在线时可用 (UI-5 禁用态明确)
-  const canSend = s.phase === "open" && ws && ws.readyState === 1;
+  // FIX-17 (ADR-11): flow 以服务端回显为准 —— CLI 设置的流控必须在 UI 可见;
+  // 用户在 closed 态改动过的选择优先 (打开动作会把表单 flow 发给服务端并回显一致)。
+  if (s.flow !== $("selFlow").value) {
+    if (!flowUserEdited || s.phase !== "closed") {
+      $("selFlow").value = s.flow;
+      flowUserEdited = false;
+    }
+  }
+
+  // FR-9a: 地址重启仅桌面壳窗口可用 (wry 注入 __SERIALHUB_SHELL 标记);
+  // headless (浏览器打开) 置灰并提示。
+  const shell = !!window.__SERIALHUB_SHELL;
+  $("inAddr").disabled = !shell;
+  $("btnRestart").disabled = !shell;
+  $("restartHint").textContent = shell
+    ? "重启后终端历史将清空"
+    : "仅桌面壳窗口支持改地址重启; headless 模式请重启进程";
+
+  // FIX-20: 「退出程序」只对桌面壳有意义 (浏览器/HEADLESS 页点了也没用) —— 置灰。
+  $("btnQuit").disabled = !shell || quitBusy;
+  $("btnQuit").title = shell
+    ? "优雅停止 SerialHub 服务并退出程序 (含托盘/串口清理)"
+    : "仅桌面壳窗口可用";
+
+  // 发送区: FIX-18 —— 使能只由相位决定 ("徽章 open ⇒ 发送可用"恒成立, 自重启后
+  // 不再死锁); WS 断开/被拒时发送会就地报错, 并在提示行给出真实原因 (FIX-19)。
+  const canSend = s.phase === "open";
   $("inSend").disabled = !canSend;
   $("btnSend").disabled = !canSend;
   const hint = $("sendHint");
   if (!canSend) {
     sendErrUntil = 0;
+    wsRejected = false;
     $("inSend").classList.remove("invalid");
     hint.classList.remove("err");
-    hint.textContent = s.phase !== "open" ? "串口未打开, 发送区禁用" : "WS 通道未连接, 发送区禁用";
+    hint.textContent = "串口未打开, 发送区禁用";
+  } else if (wsRejected) {
+    hint.classList.add("err");
+    hint.textContent = "WS 被拒: 已达最大客户端数 (1013), 发送不可用";
   } else if (Date.now() < sendErrUntil) {
     hint.classList.add("err"); // 保留 doSend 写入的错误文案
   } else {
     hint.classList.remove("err");
     hint.textContent = "回车发送 · " + (sendMode === "hex" ? "HEX 字节" : "UTF-8 文本");
   }
+  updateEquivCmd(); // FR-9c: 任意状态/配置变化即时刷新等价命令
+}
+
+/* FR-9c: 与当前控制台配置完全等价的 CLI 命令 (配置任何一项变动即时刷新) */
+function updateEquivCmd() {
+  const port = $("selPort").value;
+  const baud = $("inBaud").value || "115200";
+  const cfgStr = $("selData").value + $("selParity").value + $("selStop").value;
+  const mc = $("inMaxClients").value === "" ? "0" : $("inMaxClients").value;
+  const addr = $("inAddr").value.trim() || location.host;
+  let cmd = "serialhub";
+  if (port) cmd += " --port " + port;
+  // FIX-16: --flow 始终显式携带 (含 none), 与自我重启参数组策略一致 —— 照抄零失真
+  cmd += " --flow " + $("selFlow").value;
+  cmd += " --max-clients " + mc + " --addr " + addr;
+  $("equivCmd").textContent = cmd;
 }
 
 async function poll() {
@@ -398,6 +477,7 @@ async function scanPorts() {
     }
     for (const p of j.ports) addPortOption(p.name, p.desc);
     if (cur && [...$("selPort").options].some((o) => o.value === cur)) $("selPort").value = cur;
+    updateEquivCmd();
   } catch (e) { showClientError("扫描失败: " + e.message); }
 }
 
@@ -409,6 +489,7 @@ function collectConfig(baud) {
     parity: $("selParity").value,
     stopBits: parseInt($("selStop").value, 10),
     flow: $("selFlow").value,
+    maxClients: parseInt($("inMaxClients").value, 10) || 0, // FR-9b: 0=不限
   };
 }
 
@@ -598,6 +679,7 @@ function connectWs() {
 
   ws.onopen = () => {
     if (gen !== wsGen) return;
+    wsRejected = false; // 重连成功, 清除被拒状态 (FIX-19)
     $("wsBadge").classList.remove("b-closed");
     $("wsBadge").classList.add("b-open");
     $("wsBadgeText").textContent = "WS 已连接";
@@ -609,12 +691,17 @@ function connectWs() {
     if (data instanceof ArrayBuffer && data.byteLength) onRxFrames(new Uint8Array(data));
     else if (typeof data === "string" && data.length) onRxFrames(encoder.encode(data));
   };
-  ws.onclose = () => {
+  ws.onclose = (ev) => {
     if (gen !== wsGen) return;
     setBadge($("wsBadge"), $("wsBadgeText"), "closed");
     $("wsBadge").classList.remove("b-open");
     $("wsBadge").classList.add("b-closed");
     $("wsBadgeText").textContent = "WS 未连接";
+    // FIX-19: 被拒客户端可见性 —— close 1013 = 已达最大客户端数, 页面横幅明示
+    if (ev.code === 1013) {
+      wsRejected = true;
+      showClientError("连接被拒: 已达到最大客户端数 (1013)");
+    }
     ws = null;
     scheduleReconnect();
     poll();
@@ -658,6 +745,10 @@ function doSend() {
     bytes = encoder.encode(raw + ($("ckNewline").checked ? "\n" : ""));
   }
   if (!bytes.length) return;
+  if (!ws || ws.readyState !== 1) {
+    showClientError(wsRejected ? "WS 被拒: 已达最大客户端数 (1013)" : "WS 未连接, 发送失败");
+    return;
+  }
   try { ws.send(bytes); } catch (e) { showClientError("WS 发送失败: " + e.message); return; }
   sendErrUntil = 0;
   $("inSend").classList.remove("invalid");
@@ -666,8 +757,75 @@ function doSend() {
   $("inSend").focus();
 }
 
+/* ================= FR-9a 地址自我重启 (仅桌面壳) ================= */
+$("btnRestart").addEventListener("click", async () => {
+  const b = $("btnRestart");
+  const addr = $("inAddr").value.trim();
+  if (!/^[0-9a-fA-F.:]+:[0-9]+$/.test(addr)) {
+    showClientError("地址无效: \"" + addr + "\" (形如 127.0.0.1:8080)");
+    $("inAddr").classList.add("invalid");
+    return;
+  }
+  $("inAddr").classList.remove("invalid");
+  if (b.dataset.armed !== "1") {
+    b.dataset.armed = "1";
+    b.textContent = "确认重启?";
+    b.classList.add("armed");
+    $("restartHint").textContent = "确认后将重启并清空终端历史 (FIX-21)"; // FIX-21
+    setTimeout(() => {
+      if (b.dataset.armed === "1") {
+        b.dataset.armed = "0";
+        b.textContent = "应用并重启";
+        b.classList.remove("armed");
+        $("restartHint").textContent = "重启后终端历史将清空";
+      }
+    }, 3000);
+    return;
+  }
+  b.dataset.armed = "0";
+  b.disabled = true;
+  b.textContent = "重启中…";
+  try {
+    await api("/api/restart", { addr });
+    b.textContent = "旧实例退出中, 新窗口即将打开…";
+    // 本页面所属旧进程将优雅退出; 新实例 (同参数, 新地址) 会打开自己的窗口
+  } catch (e) {
+    b.disabled = false;
+    b.textContent = "应用并重启";
+    showClientError(e.message);
+    poll();
+  }
+});
+
+$("btnCopyCmd").addEventListener("click", async () => {
+  const cmd = $("equivCmd").textContent;
+  try {
+    await navigator.clipboard.writeText(cmd);
+    $("btnCopyCmd").textContent = "已复制";
+  } catch (_) {
+    // WebView2/非安全上下文兜底: 选中文本
+    const r = document.createRange();
+    r.selectNodeContents($("equivCmd"));
+    const sel = getSelection();
+    sel.removeAllRanges();
+    sel.addRange(r);
+    $("btnCopyCmd").textContent = "请 Ctrl+C";
+  }
+  setTimeout(() => { $("btnCopyCmd").textContent = "📋 复制"; }, 1500);
+});
+
 /* ================= 事件绑定 ================= */
 $("btnScan").addEventListener("click", scanPorts);
+["inBaud", "inMaxClients", "inAddr"].forEach((id) =>
+  $(id).addEventListener("input", updateEquivCmd)
+);
+["selPort", "selData", "selParity", "selStop"].forEach((id) =>
+  $(id).addEventListener("change", updateEquivCmd)
+);
+$("selFlow").addEventListener("change", () => {
+  flowUserEdited = true; // FIX-17: 用户改动优先于回显
+  updateEquivCmd();
+});
 $("btnOpen").addEventListener("click", openPort);
 $("btnClose").addEventListener("click", closePort);
 $("btnClear").addEventListener("click", clearTerm);
@@ -717,6 +875,7 @@ $("btnQuit").addEventListener("click", async () => {
     return;
   }
   b.dataset.armed = "0";
+  quitBusy = true; // FIX-20: applyStatus 不再重置按钮
   b.disabled = true;
   b.textContent = "正在退出…";
   try { await fetch("/api/shutdown", { method: "POST" }); } catch (_) {}

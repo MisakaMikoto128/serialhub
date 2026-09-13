@@ -16,7 +16,7 @@ use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tokio::sync::{mpsc, watch};
 
-use crate::config::SerialConfig;
+use crate::config::{Flow, SerialConfig};
 use crate::hub::{HubState, Phase};
 use crate::serial::PortCtx;
 use crate::supervisor::{self, HubCmd};
@@ -27,6 +27,12 @@ pub struct Startup {
     pub cfg: SerialConfig,
     pub auto_open: bool,
     pub addr: SocketAddr,
+    /// FR-9b: 最大客户端数 (0 = 不限)。
+    pub max_clients: u32,
+    /// ADR-10: 流控 (CLI 与 /api/config 同一套校验; 自我重启携带)。
+    pub flow: Flow,
+    /// FR-9a: 是否 GUI 壳 —— /api/restart 只在 GUI 模式允许自我重启。
+    pub gui: bool,
 }
 
 /// 服务向上层 (GUI) 发的通知。
@@ -52,7 +58,9 @@ pub async fn run_service(
     shutdown_tx: watch::Sender<bool>,
     on_event: Option<OnEvent>,
 ) -> Result<(), String> {
-    let hub = Arc::new(HubState::new(su.cfg));
+    let mut cfg = su.cfg;
+    cfg.flow = su.flow; // ADR-10: CLI --flow 进入统一配置
+    let hub = Arc::new(HubState::new(cfg, su.max_clients));
     let (bc_tx, _) = broadcast::channel::<Vec<u8>>(1024);
     let ctx = PortCtx {
         hub: hub.clone(),
@@ -67,10 +75,22 @@ pub async fn run_service(
     let mut serve_sd = shutdown_tx.subscribe();
     let mut main_sd = shutdown_tx.subscribe();
 
-    // 1) 先绑定: 端口被占用立即失败 —— 不开串口、不进服务循环 (FR-8)
-    let listener = TcpListener::bind(su.addr)
-        .await
-        .map_err(|e| format!("端口被占用: 无法监听 {}: {e}", su.addr))?;
+    // 1) 绑定: FR-9a 交接需要 —— bind 失败按 250ms 重试至 <=2s (等旧实例优雅退出),
+    //    仍失败按 FR-8 报"端口被占用" (不开串口、不进服务循环)。
+    let listener = {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            match TcpListener::bind(su.addr).await {
+                Ok(l) => break l,
+                Err(e) => {
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(format!("端口被占用: 无法监听 {}: {e}", su.addr));
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+            }
+        }
+    };
 
     // 实际监听地址 (su.addr 端口可为 0, 由系统分配 —— GUI/测试都以 Ready 上报的为准)
     let addr = listener.local_addr().map_err(|e| format!("获取监听地址失败: {e}"))?;
@@ -112,10 +132,16 @@ pub async fn run_service(
     }
 
     // 4) HTTP+WS 服务 (优雅停机由 shutdown watch 触发)
+    // FR-9a: 自我重启目标地址槽 —— /api/restart 只登记并触发停机;
+    // 真正的 spawn 在 finalize_shutdown 里、串口释放之后 (先释放 COM 再交接,
+    // 否则新实例 auto-open 会撞上旧实例未释放的串口, 触发 ELTIMA 失败打开锁)。
+    let restart_to: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
     let app = crate::api::App {
         ctx: ctx.clone(),
         cmd_tx: cmd_tx.clone(),
         shutdown_tx: shutdown_tx.clone(),
+        gui: su.gui,
+        restart_to: restart_to.clone(),
         index: include_str!("../ui/index.html"),
     };
     let serve = tokio::spawn(async move {
@@ -137,7 +163,7 @@ pub async fn run_service(
         _ = main_sd.changed() => {}          // 托盘退出 / POST /api/shutdown
         _ = tokio::signal::ctrl_c() => {},   // headless 控制台 Ctrl-C
     }
-    finalize_shutdown(cmd_tx, ctx, serve, on_event, SHUTDOWN_GRACE, true).await
+    finalize_shutdown(cmd_tx, ctx, serve, on_event, SHUTDOWN_GRACE, true, restart_to).await
 }
 
 /// 停机宽限 (qa-sprint2-fix): watch 触发后 250ms 保证串口线程退出 (COM 释放优先),
@@ -153,11 +179,20 @@ async fn finalize_shutdown(
     on_event: Option<OnEvent>,
     grace: Duration,
     hard_exit: bool,
+    restart_to: Arc<std::sync::Mutex<Option<String>>>,
 ) -> Result<(), String> {
     // COM 释放优先: 关串口 + 置会话 stop 标志 (读/写线程 <=150ms 自行退出)
     let _ = cmd_tx.send(HubCmd::Close);
     ctx.stop_active();
     tokio::time::sleep(SERIAL_THREAD_DRAIN).await;
+    // FR-9a: COM 已释放, 此刻再拉起新实例 (新地址) —— 新实例 auto-open 不会撞锁
+    if let Some(new_addr) = restart_to.lock().unwrap().take() {
+        let cfg = ctx.hub.config();
+        let max_clients = ctx.hub.max_clients();
+        if let Err(e) = spawn_respawn(&new_addr, &cfg, max_clients) {
+            eprintln!("serialhub: 自我重启拉起新实例失败: {e} (本进程仍将退出)");
+        }
+    }
     // axum 有界宽限
     let outcome = tokio::time::timeout(grace, serve).await;
     let done = matches!(&outcome, Ok(Ok(Ok(()))));
@@ -178,6 +213,54 @@ async fn finalize_shutdown(
         }
     }
     result
+}
+
+/// FR-9a: 以"当前配置 + 替换 addr"的等价 CLI 参数 DETACHED 拉起同 exe 新实例。
+/// 新实例对 bind 做 <=2s 重试 (旧实例退出即交接成功)。
+fn respawn_args(new_addr: &str, cfg: &SerialConfig, max_clients: u32) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "--addr".into(),
+        new_addr.to_string(),
+        "--max-clients".into(),
+        max_clients.to_string(),
+        "--flow".into(), // ADR-10: 重启携带当前流控, 不再回 none
+        cfg.flow.as_str().to_string(),
+        "--gui".into(),
+    ];
+    if !cfg.port.is_empty() {
+        args.push("--port".into());
+        args.push(cfg.port.clone());
+        args.push("--baud".into());
+        args.push(cfg.baud.to_string());
+        args.push("--config".into());
+        args.push(cfg.config_str());
+    }
+    args
+}
+
+fn spawn_respawn(new_addr: &str, cfg: &SerialConfig, max_clients: u32) -> Result<(), String> {
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("定位当前可执行文件失败: {e}"))?;
+    let args = respawn_args(new_addr, cfg, max_clients);
+    #[cfg(windows)]
+    {
+        const DETACHED: u32 = 0x0000_0008; // DETACHED_PROCESS
+        const NEW_GROUP: u32 = 0x0000_0200; // CREATE_NEW_PROCESS_GROUP
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new(&exe)
+            .args(&args)
+            .creation_flags(DETACHED | NEW_GROUP)
+            .spawn()
+            .map_err(|e| format!("spawn 失败: {e}"))?;
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new(&exe)
+            .args(&args)
+            .spawn()
+            .map_err(|e| format!("spawn 失败: {e}"))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -209,6 +292,9 @@ mod tests {
             cfg: SerialConfig::default(),
             auto_open: false,
             addr: "127.0.0.1:0".parse().unwrap(), // 随机空闲端口
+            max_clients: 0,
+            flow: crate::config::Flow::None,
+            gui: false,
         };
         let srv = tokio::spawn(run_service(
             su,
@@ -269,6 +355,213 @@ mod tests {
         assert_eq!(*rx.borrow(), false);
     }
 
+    /// 手工 WS 握手 (HTTP/1.1 Upgrade), 返回升级后的 TcpStream。
+    async fn ws_handshake(addr: SocketAddr) -> TcpStream {
+        let mut s = TcpStream::connect(addr).await.unwrap();
+        let req = format!(
+            "GET /ws HTTP/1.1\r\nHost: {addr}\r\nUpgrade: websocket\r\n\
+             Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+             Sec-WebSocket-Version: 13\r\n\r\n"
+        );
+        s.write_all(req.as_bytes()).await.unwrap();
+        let mut buf = [0u8; 1024];
+        let n = s.read(&mut buf).await.unwrap();
+        let head = String::from_utf8_lossy(&buf[..n]).to_string();
+        assert!(head.starts_with("HTTP/1.1 101"), "WS 握手失败: {head}");
+        s
+    }
+
+    /// FR-9b: maxClients=1 时, 第 2 条 WS 握手后以 close code 1013 (reason "max clients")
+    /// 拒绝且不计入 clients; 第 1 条不受影响; status 回显 maxClients=1。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ws_over_max_clients_rejected_with_1013() {
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<HubCmd>();
+        let (shutdown_tx, _) = watch::channel(false);
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<SocketAddr>();
+        let ready_tx = Arc::new(std::sync::Mutex::new(Some(ready_tx)));
+        let on_event: OnEvent = Arc::new(move |ev: ServiceEvent| {
+            if let ServiceEvent::Ready(a) = ev {
+                if let Some(tx) = ready_tx.lock().unwrap().take() {
+                    let _ = tx.send(a);
+                }
+            }
+        });
+        let su = Startup {
+            cfg: SerialConfig::default(),
+            auto_open: false,
+            addr: "127.0.0.1:0".parse().unwrap(),
+            max_clients: 1,
+            flow: Flow::None,
+            gui: false,
+        };
+        let srv = tokio::spawn(run_service(
+            su,
+            cmd_tx,
+            cmd_rx,
+            shutdown_tx.clone(),
+            Some(on_event),
+        ));
+        let addr = tokio::time::timeout(Duration::from_secs(5), ready_rx)
+            .await
+            .expect("服务 5s 内未就绪")
+            .expect("Ready 事件缺失");
+
+        // 第 1 条 WS: 正常接受
+        let mut ws1 = ws_handshake(addr).await;
+
+        // 第 2 条 WS: 握手成功后收到 close 1013 "max clients"
+        // (101 响应头与 close 帧可能合并或分片到达, 循环读取直到帧完整)
+        let mut ws2 = TcpStream::connect(addr).await.unwrap();
+        let req = format!(
+            "GET /ws HTTP/1.1\r\nHost: {addr}\r\nUpgrade: websocket\r\n\
+             Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+             Sec-WebSocket-Version: 13\r\n\r\n"
+        );
+        ws2.write_all(req.as_bytes()).await.unwrap();
+        let mut all: Vec<u8> = Vec::new();
+        let mut tmp = [0u8; 512];
+        let mut saw_101 = false;
+        loop {
+            let n = tokio::time::timeout(Duration::from_secs(2), ws2.read(&mut tmp))
+                .await
+                .expect("等待 close 帧超时")
+                .unwrap();
+            if n == 0 {
+                panic!("连接关闭但未收到 close 帧");
+            }
+            all.extend_from_slice(&tmp[..n]);
+            let hdr_end = all
+                .windows(4)
+                .position(|w| w == b"\r\n\r\n")
+                .map(|pos| pos + 4);
+            if let Some(hs) = hdr_end {
+                if !saw_101 {
+                    assert!(all.starts_with(b"HTTP/1.1 101"), "第 2 条应先完成握手");
+                    saw_101 = true;
+                }
+                let frames = &all[hs..];
+                if frames.len() >= 4 {
+                    assert_eq!(frames[0] & 0x0f, 8, "应为 Close 帧");
+                    let code = ((frames[2] as u16) << 8) | frames[3] as u16;
+                    assert_eq!(code, 1013, "close code 应为 1013, 实际 {code}");
+                    let plen = (frames[1] & 0x7f) as usize;
+                    let reason = String::from_utf8_lossy(&frames[4..2 + plen]).to_string();
+                    assert_eq!(reason, "max clients");
+                    break;
+                }
+            }
+        }
+        drop(ws2);
+
+        // status: clients 恰 1 (拒连不计入) 且 maxClients=1
+        let mut http = TcpStream::connect(addr).await.unwrap();
+        let req = format!(
+            "GET /api/status HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
+        );
+        http.write_all(req.as_bytes()).await.unwrap();
+        let mut resp = Vec::new();
+        http.read_to_end(&mut resp).await.unwrap();
+        let body = String::from_utf8_lossy(&resp);
+        assert!(body.contains("\"clients\":1"), "clients 应为 1: {body}");
+        assert!(body.contains("\"maxClients\":1"), "maxClients 应为 1: {body}");
+
+        shutdown_tx.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(3), srv)
+            .await
+            .expect("停机 3s 内未完成")
+            .unwrap()
+            .unwrap();
+        drop(ws1);
+    }
+
+    /// FR-9a: /api/restart 在 headless (gui=false) 下拒绝, 提示改地址需重启进程。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn restart_rejected_in_headless() {
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<HubCmd>();
+        let (shutdown_tx, _) = watch::channel(false);
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<SocketAddr>();
+        let ready_tx = Arc::new(std::sync::Mutex::new(Some(ready_tx)));
+        let on_event: OnEvent = Arc::new(move |ev: ServiceEvent| {
+            if let ServiceEvent::Ready(a) = ev {
+                if let Some(tx) = ready_tx.lock().unwrap().take() {
+                    let _ = tx.send(a);
+                }
+            }
+        });
+        let su = Startup {
+            cfg: SerialConfig::default(),
+            auto_open: false,
+            addr: "127.0.0.1:0".parse().unwrap(),
+            max_clients: 0,
+            flow: crate::config::Flow::None,
+            gui: false,
+        };
+        let mut srv = tokio::spawn(run_service(
+            su,
+            cmd_tx,
+            cmd_rx,
+            shutdown_tx.clone(),
+            Some(on_event),
+        ));
+        let addr = tokio::time::timeout(Duration::from_secs(5), ready_rx)
+            .await
+            .expect("服务 5s 内未就绪")
+            .expect("Ready 事件缺失");
+
+        let mut http = TcpStream::connect(addr).await.unwrap();
+        let json_body = r#"{"addr":"127.0.0.1:8099"}"#;
+        let body_req = format!(
+            "POST /api/restart HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+            json_body.len(),
+            json_body
+        );
+        http.write_all(body_req.as_bytes()).await.unwrap();
+        let mut resp = Vec::new();
+        http.read_to_end(&mut resp).await.unwrap();
+        let body = String::from_utf8_lossy(&resp);
+        assert!(body.contains("400"), "应 400: {body}");
+        assert!(body.contains("重启进程"), "应提示重启进程: {body}");
+
+        // 守卫在停机之前: 服务不应因 restart 请求退出 (&mut 借用, srv 稍后仍需 join)
+        tokio::time::timeout(Duration::from_millis(500), &mut srv)
+            .await
+            .expect_err("服务不应因 restart 请求退出");
+        shutdown_tx.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(3), srv)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+
+    /// ADR-10: 自我重启参数组必须携带当前 flow (--flow), 重启后不再回 none。
+    #[test]
+    fn respawn_args_carry_flow() {
+        let mut cfg = SerialConfig::default();
+        cfg.port = "COM2".into();
+        cfg.baud = 921_600;
+        cfg.flow = Flow::RtsCts;
+        let args = respawn_args("127.0.0.1:9000", &cfg, 4);
+        let joined = args.join(" ");
+        for expect in [
+            "--addr 127.0.0.1:9000",
+            "--port COM2",
+            "--baud 921600",
+            "--config 8N2",
+            "--max-clients 4",
+            "--flow rtscts",
+            "--gui",
+        ] {
+            assert!(joined.contains(expect), "respawn 参数缺 {expect}: {joined}");
+        }
+        // flow=none 也应显式携带 (语义明确)
+        cfg.flow = Flow::None;
+        let args = respawn_args("127.0.0.1:9000", &cfg, 0);
+        assert!(args.iter().any(|a| a == "--flow"));
+        assert!(args.windows(2).any(|w| w[0] == "--flow" && w[1] == "none"));
+    }
+
     /// 停机兜底 (qa-sprint2-fix): 挂着不退的客户端 (永不完成的 serve) 时,
     /// 停机仍**有界**完成 —— Close 先发 (COM 释放优先) → stop_active 置位 →
     /// 宽限耗尽返回 Err (hard_exit=false; 生产路径 hard_exit=true 在此 exit(0))。
@@ -277,7 +570,7 @@ mod tests {
         use std::sync::atomic::{AtomicBool, Ordering};
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<HubCmd>();
         let (shutdown_tx, _) = watch::channel(false);
-        let hub = Arc::new(HubState::new(SerialConfig::default()));
+        let hub = Arc::new(HubState::new(SerialConfig::default(), 0));
         let ctx = PortCtx {
             hub: hub.clone(),
             bc_tx: broadcast::channel(16).0,
@@ -294,6 +587,8 @@ mod tests {
         let never: tokio::task::JoinHandle<Result<(), std::io::Error>> =
             tokio::spawn(async { std::future::pending::<Result<(), std::io::Error>>().await });
 
+        let restart_to: Arc<std::sync::Mutex<Option<String>>> =
+            Arc::new(std::sync::Mutex::new(None));
         let res = finalize_shutdown(
             cmd_tx,
             ctx,
@@ -301,6 +596,7 @@ mod tests {
             Some(on_event),
             Duration::from_millis(200),
             false, // 测试不 exit 进程; 生产路径 true
+            restart_to,
         )
         .await;
 
@@ -341,6 +637,9 @@ mod tests {
             cfg: SerialConfig::default(),
             auto_open: false,
             addr: "127.0.0.1:0".parse().unwrap(),
+            max_clients: 0,
+            flow: crate::config::Flow::None,
+            gui: false,
         };
         let srv = tokio::spawn(run_service(
             su,

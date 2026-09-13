@@ -30,7 +30,9 @@ websocket-serial-server —— 2021 年停更, JSON+base64 包帧。
   lastError/uptimeSec, **不含 flow** (P2 再议); ② uptimeSec = **进程运行时长**;
   ③ POST 成功 `{"ok":true}`, 失败 400 + `{"ok":false,"error":"..."}`;
   ④ `/api/open` 在已打开态为 **no-op** (热改必须 close→config→open);
-  ⑤ (ADR-8) `POST /api/shutdown` 优雅停机整进程 —— 退出不能只依赖托盘菜单 (Sprint2 UX P1-1)。
+  ⑤ (ADR-8) `POST /api/shutdown` 优雅停机整进程 —— 退出不能只依赖托盘菜单 (Sprint2 UX P1-1);
+  ⑥ (ADR-11) status 契约 10→**11 字段**: 新增 `flow` (none/rtscts/xonxoff) —— 配置回显是
+  双入口对等 (FR-9) 的前提, 无回显则 UI 一次开关即静默降级流控 (Sprint3 UX P1-2 实证)。
 - **FR-5 CLI**: `serialhub --port COM1 --baud 115200 --config 8N2 --addr 127.0.0.1:8080
   [--list-ports] [--no-open]`。未给 `--port` 时启动为"未打开"态, 由 UI 驱动。
 - **FR-6 内嵌控制台**: 单页 (内嵌进二进制, include_str!), 零外部依赖:
@@ -46,6 +48,16 @@ websocket-serial-server —— 2021 年停更, JSON+base64 包帧。
   - `--headless` 走旧行为 (纯 CLI 前台, 无窗口无托盘) —— 自动化测试与脚本场景专用;
   - 地址被占用时启动报错退出 (错误含"端口被占用"字样), 不静默;
   - 已打开态下窗口刷新/重连不丢终端历史 (内嵌同一套前端逻辑, 天然满足)。
+
+- **FR-9 配置全量双入口 (UI ⇄ CLI 完全对等, 面向全体开发者)**:
+  - FR-9a **监听地址 UI 可改**: GUI 模式下修改 addr → 桥**自我重启** (spawn 同 exe 同参数替换 addr →
+    优雅退出旧实例; 新实例启动时对 bind 做 ≤2s 重试以平滑交接); headless 模式 UI 明示"改地址请重启进程"。
+  - FR-9b **最大客户端数**: `--max-clients <n>` (0=不限, 默认) + UI 可设; 超限的新客户端 WS 以
+    close code 1013 拒绝; status 契约**增至 10 字段** (新增 `maxClients`, ADR-9 修订 ADR-5①)。
+  - FR-9c **等价命令一键复制**: 控制台显示与当前全部配置等价的 CLI 启动命令 + 复制按钮 ——
+    界面上每个配置项都能在 CLI 找到对应物, 反之亦然 (含 --headless 提示)。
+  - FR-9d README 增「配置对照表」: 每个参数 CLI ↔ UI 位置一一对应。
+  - 启动 bind 重试 ≤2s (上述交接需要), 仍失败按 FR-8 报"端口被占用"。
 
 ## 3. UI 需求 (UI)
 
