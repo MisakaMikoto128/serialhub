@@ -169,3 +169,5 @@ service.rs serve 循环化: rebind 槽 (每轮新建) 触发 serve 任务第二�
    windows_subsystem = "windows")]` —— release GUI 无黑窗 (调试版保留控制台);
    headless release 的 stdout 随之不可见, 属既定取舍 (文档注明)。
 ④ 实用功能调研: 竞品对照席 (505) 专项报告, 只列真实用的, 不堆功能。
+
+### ADR-20 实施记录: 落地为双路径受理 (b92f591, 已推 CI 三平台绿)
