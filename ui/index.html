@@ -172,7 +172,8 @@ button{background:var(--panel-2);border:1px solid var(--border-strong);border-ra
   height:var(--ctl-h);padding:0 var(--ctl-px);font-size:var(--ctl-fs);color:var(--ink);
   display:inline-flex;align-items:center;justify-content:center;white-space:nowrap}
 /* 紧凑档 (--ctl-h-sm): 仅工具条/标题条/侦听工具条内小按钮 (幽灵复制钮高度在 .copy-ghost 自带) */
-.quit-btn,.x-btn,.seg button,.term-toolbar>button{height:var(--ctl-h-sm)}
+.quit-btn,.x-btn,.seg button,.term-toolbar>button,#drToggle{height:var(--ctl-h-sm)}
+#drToggle{flex:none} /* F3: 抽屉头部的停止/启动钮, 与卡片同源同文案 (UI-0), 随轮询实时同步 */
 /* 波3 (UX P2-1): 页头钮统一标准档 34 —— 新钮与原住民同排同高, 不再有"两代按钮" */
 #btnQuit{height:var(--ctl-h)}
 button:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
@@ -519,6 +520,7 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
   <div class="dr-head">
     <h2 id="drTitle">桥</h2>
     <span id="drBadge" class="badge b-closed"><span class="dot"></span><span id="drPhase">已停止</span></span>
+    <button id="drToggle" type="button" title="启动/停止这座桥"></button>
     <button id="drClose" type="button" title="关闭抽屉 (Esc)">✕ 关闭</button>
   </div>
   <div class="dr-dataurl">数据网址 <code id="drDataUrl">—</code>
@@ -686,6 +688,8 @@ const recTimers = new Map();     /* id → 恢复横幅 3s 收起定时器 */
 let lastSparkPush = 0;
 let connOk = true;
 let drawerId = null, lastFocus = null, activeTab = "cfg";
+let drawerRunAtOpen = false; /* F3: 打开抽屉那一刻桥是否在运行 —— 决定保存是否自动停→存→启 */
+let cfgSaving = false;       /* F3: 停→存→启在途标记: 冻结抽屉锁定态, 防半程轮询解锁/重复提交 */
 let noticeTimer = null;
 
 function fmtBytes(n) { return Number(n || 0).toLocaleString("en-US"); }
@@ -990,7 +994,7 @@ async function toggleBridge(id) {
   } catch (e) {
     notice((starting ? "启动失败: " : "停止失败: ") + e.message, "err");
   }
-  poll();
+  await poll(); /* 等刷新落地再返回: 紧随其后的开抽屉/再点击不读到旧相位 */
 }
 /* 删除两段确认 (UI-0): 大白话预告后果, 3s 不确认自动复原 */
 function armDelete(id, els) {
@@ -1041,8 +1045,12 @@ function fillPortSelect(sel, ports, cur) {
   }
   if (cur && [...sel.options].some((o) => o.value === cur)) sel.value = cur;
 }
-async function scanInto(sel) {
-  const cur = sel.value;
+async function scanInto(sel, curHint) {
+  /* F1 根因修复: 打开表单时「上次串口」还不在 options 里 (下拉是扫描完才有内容),
+     直接 sel.value= 会静默落空, scanInto 再取 sel.value 就成了空 —— 回填永远丢。
+     所以打开表单时把记忆值显式递进来 (curHint); 选回仍由 fillPortSelect 裁决:
+     扫描列表里还在才选回, 设备拔了自然落回列表默认。 */
+  const cur = curHint != null && curHint !== "" ? String(curHint) : sel.value;
   try {
     const j = await api("/api/ports");
     fillPortSelect(sel, j.ports || [], cur);
@@ -1205,9 +1213,8 @@ function openNew() {
   let restored = false;
   try {
     restored = restoreLastBridge(last);
-    /* 串口预填上次值 —— 扫描列表里仍在才会被选回 (fillPortSelect 的 cur 裁决),
-       设备拔了就落回列表默认, 用户自己选 */
-    if (last && last.port) $("npPort").value = String(last.port);
+    /* 串口不在此回填: 记忆值此刻还不在 options 里 (下拉要等扫描完),
+       由函数尾 scanInto($("npPort"), last.port) 显式递入, 见 F1 根因修复注 */
   } catch (_) {
     applyBridgeDefaults(); restored = false; /* 任何异常: 按无记忆处理 */
   }
@@ -1221,10 +1228,9 @@ function openNew() {
   prefillListenPort();
   $("npAuto").checked = true; /* FR-12: 自动重连默认开 */
   $("npPort").innerHTML = "<option value=\"\">(扫描中…)</option>";
-  /* A2: 串口预填上次值 —— 扫描列表里仍在才会被选回 (fillPortSelect 的 cur 裁决),
-     设备拔了就落回列表默认, 用户自己选 */
-  if (last && last.port) $("npPort").value = String(last.port);
-  scanInto($("npPort"));
+  /* A2/F1: 上次串口随扫描显式递入 (curHint) —— 扫描列表里仍在才选回
+     (fillPortSelect 的 cur 裁决), 设备拔了就落回列表默认, 用户自己选 */
+  scanInto($("npPort"), last && last.port ? String(last.port) : undefined);
   dlgNew.showModal();
   $("npName").focus();
 }
@@ -1271,10 +1277,12 @@ async function createBridge() {
   }
 }
 
-/* ================= 波特率自绘下拉 (BUG-3 修复) =================
+/* ================= 波特率自绘下拉 (BUG-3 修复 / F2 自由键入) =================
    原生 number spinner + datalist 箭头挤在输入框右下角, 又挤又丑 —— 藏掉 spinner、
    去掉 datalist, 换成: 输入框右缘 28px 幽灵 chevron (与复制幽灵同族), 点击/聚焦弹出
-   常用波特率菜单; 输入数字即过滤, ↑↓ 移动高亮 + 回车选中, Esc/失焦/点外关闭。
+   常用波特率菜单。F2 口径: 键入的合法数字直接就是最终值, 列表只是快捷方式,
+   绝不做白名单拦截 —— 输入数字仅过滤菜单辅助挑选; ↑↓ 显式选中后回车才替入预设,
+   否则回车 = 确认键入值并收起菜单; 下拉点选 = 填入; Esc/失焦/点外关闭。
    全部用设计令牌着色, 不引外部库; 菜单项点击用 pointerdown+preventDefault,
    输入框不先失焦 (click 前菜单不会被 blur 关掉)。 */
 const BAUD_PRESETS = [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600, 1000000, 2000000];
@@ -1289,6 +1297,7 @@ function enhanceBaudInput(inp) {
   if (!btn || !menu) return;
   btn.innerHTML = BAUD_CHEVRON;
   let activeIdx = -1;        /* 当前键盘高亮的菜单项下标 */
+  let navigated = false;     /* F2: 用户已用 ↑↓ 显式移动过高亮 —— 回车才允许替入该项 */
   let silent = false;        /* 程序性派发 input 事件时置位, 不当作用户输入重开菜单 */
   let pendingSelfFocus = false; /* 选中后主动 refocus 的那次 focus 不重开菜单 (一次性, 非时间窗) */
   const items = () => [...menu.querySelectorAll("li[data-baud]")];
@@ -1323,7 +1332,8 @@ function enhanceBaudInput(inp) {
       });
       menu.appendChild(li);
     }
-    activeIdx = list.length ? 0 : -1; /* 默认高亮第一个匹配项: 回车即选 */
+    activeIdx = list.length ? 0 : -1; /* 默认高亮第一个匹配项: 仅作视觉提示 */
+    navigated = false; /* F2: 每次重渲染都回到「未显式选中」—— 回车先认键入值 */
     paint();
   }
   function open(byTyping) { render(byTyping === true); menu.classList.add("open"); btn.setAttribute("aria-expanded", "true"); }
@@ -1366,12 +1376,17 @@ function enhanceBaudInput(inp) {
       activeIdx = ev.key === "ArrowDown"
         ? (activeIdx + 1) % lis.length
         : (activeIdx - 1 + lis.length) % lis.length;
+      navigated = true; /* F2: 显式移动过高亮, 回车才选定该项 */
       paint();
       lis[activeIdx].scrollIntoView({ block: "nearest" });
     } else if (ev.key === "Enter" && isOpen()) {
       ev.preventDefault();
       const lis = items();
-      if (activeIdx >= 0 && lis[activeIdx]) choose(parseInt(lis[activeIdx].dataset.baud, 10));
+      if (navigated && activeIdx >= 0 && lis[activeIdx]) {
+        choose(parseInt(lis[activeIdx].dataset.baud, 10)); /* ↑↓ 显式选中的预设才替入 */
+      } else {
+        close(); /* F2: 键入值直接就是最终值 —— 回车=确认键入值, 只收起菜单不偷换 */
+      }
     } else if (ev.key === "Escape" && isOpen()) {
       ev.preventDefault(); ev.stopPropagation(); /* 只关菜单, 不关整个弹窗 */
       baudMenuEscAt = Date.now();
@@ -1427,20 +1442,27 @@ function cfgErr(msg) {
   else el.classList.remove("show");
 }
 async function saveCfg() {
-  if (!drawerId) return;
+  if (!drawerId || cfgSaving) return;
   const b = bridges.find((x) => x.id === drawerId);
   if (!b) return;
   const name = $("cfName").value.trim();
   if (!name) { cfgErr("请给桥起个名字"); return; }
+  /* FR-10f: 桥数据网址生命周期内不变 (后端对 config 里的 listen 一律拒收)。
+     不再发送该字段 (发了必被拒, 存量 bug); 用户改了就明说, 不静默吞掉 */
+  if ($("cfListen").value.trim() !== (b.listen || "")) {
+    cfgErr("这座桥的数据网址建好就不能改; 要换端口请删除这座桥再新建");
+    return;
+  }
+  /* F3 流程糖: 打开抽屉时桥在运行 → 保存 = 停止→应用→启动一次完成 (UI 代跑,
+     数据面契约不变: 仍是 close→config→open); 原本停止 → 照旧只保存, 手动启动 */
+  const restart = drawerRunAtOpen;
   const body = { name };
   body.autoReconnect = $("cfAuto").checked; /* FR-12: 随每次保存显式携带 (缺省 true) */
-  if (b.phase === "closed") {
+  if (b.phase === "closed" || restart) {
     const port = $("cfPort").value;
     const baud = validateBaud($("cfBaud"));
-    const listen = validateListen($("cfListen"));
     if (!port) { cfgErr("请选择串口 (点「扫描」刷新列表)"); return; }
     if (baud.err) { cfgErr(baud.err); return; }
-    if (listen.err) { cfgErr(listen.err); return; }
     body.serial = {
       port,
       baud: baud.val,
@@ -1449,15 +1471,29 @@ async function saveCfg() {
       stopBits: parseInt($("cfStop").value, 10),
       flow: $("cfFlow").value,
     };
-    body.listen = listen.val;
     body.maxClients = parseInt($("cfMax").value, 10) || 0;
   }
+  cfgSaving = true;
+  const btn = $("btnCfSave");
+  btn.disabled = true;
+  ["cfPort", "btnCfScan", "cfBaud", "cfData", "cfParity", "cfStop", "cfFlow", "cfListen", "cfMax", "cfAuto"]
+    .forEach((id) => { $(id).disabled = true; }); /* 在途冻结: 防半程轮询解锁被编辑 */
   try {
-    await api("/api/fleet/" + drawerId + "/config", body);
-    cfgErr(null);
-    notice("设置已保存" + (b.phase === "closed" ? "; 点「启动」后生效" : ""), "ok");
+    if (restart) {
+      await api("/api/fleet/" + drawerId + "/stop", {});  /* 后端幂等: 已停 = 空操作 */
+      await api("/api/fleet/" + drawerId + "/config", body);
+      await api("/api/fleet/" + drawerId + "/start", {});
+      cfgErr(null);
+      notice("设置已保存, 桥已恢复运行", "ok");
+    } else {
+      await api("/api/fleet/" + drawerId + "/config", body);
+      cfgErr(null);
+      notice("设置已保存" + (b.phase === "closed" ? "; 点「启动」后生效" : ""), "ok");
+    }
   } catch (e) { cfgErr(e.message); }
-  poll();
+  cfgSaving = false;
+  btn.disabled = false;
+  await poll(); /* 刷新落地再返回, 抽屉锁定态立刻对齐最终相位 */
 }
 function openDrawer(id, opener) {
   const b = bridges.find((x) => x.id === id);
@@ -1466,6 +1502,14 @@ function openDrawer(id, opener) {
   if (tapBridgeId !== id) { disconnectTap(); tapBridgeId = id; resetStream(); clearTerm(); }
   fillCfg(b);
   drawerId = id;
+  /* F3: 记住打开时是否在运行 —— 在运行 → 保存=停→存→启一次完成 (按钮「保存并启动」);
+     原本停止 → 照旧只保存, 手动启动 */
+  drawerRunAtOpen = b.phase !== "closed";
+  const sb = $("btnCfSave");
+  sb.textContent = drawerRunAtOpen ? "保存并启动" : "保 存";
+  sb.title = drawerRunAtOpen
+    ? "保存设置; 桥会自动停止、应用并恢复运行"
+    : "保存这座桥的设置";
   drawer.hidden = false; mask.hidden = false;
   switchTab(activeTab);
   scanInto($("cfPort"));
@@ -1525,6 +1569,11 @@ function syncDrawerLive() {
   if (!b) return;
   $("drTitle").textContent = b.name || b.id;
   setBadge($("drBadge"), $("drPhase"), b.phase);
+  /* F3: 抽屉头部的停止/启动钮与卡片同源同文案 (UI-0), 随轮询实时同步 */
+  const drT = $("drToggle"), drStarting = b.phase === "closed";
+  drT.textContent = drStarting ? "启动" : "停止";
+  drT.classList.toggle("primary", drStarting);
+  drT.title = drStarting ? "连上串口开始转发" : "这座桥暂停工作, 串口会断开";
   $("drDataUrl").textContent = dataUrl(b.listen) || "—";
   /* 统计页 */
   $("stClients").textContent = fmtBytes(b.clients);
@@ -1544,13 +1593,15 @@ function syncDrawerLive() {
     "</b> · 网址 <b>" + esc(b.listen || "—") + "</b>";
   if (b.lastError) { $("stErr").textContent = "上次出错: " + b.lastError; $("stErr").classList.add("show"); }
   else { $("stErr").classList.remove("show"); $("stErr").textContent = ""; }
-  /* 设置页: 串口打开期间锁定参数 (热改需先停止), 名称除外; cfAuto 同锁 (改配与串口参数同一时机) */
+  /* 设置页: 串口打开期间锁定参数 (热改需先停止), 名称除外; cfAuto 同锁 (改配与串口参数同一时机)。
+     F3: 停→存→启在途 (cfgSaving) 时冻结锁定态 —— 半程 phase=closed 的轮询不得解锁 */
+  if (cfgSaving) return;
   const locked = b.phase !== "closed";
   ["cfPort", "btnCfScan", "cfBaud", "cfData", "cfParity", "cfStop", "cfFlow", "cfListen", "cfMax", "cfAuto", "btnCfSave"]
     .forEach((id) => { $(id).disabled = locked; });
   const hint = $("cfLockHint");
   if (locked) {
-    hint.textContent = "这座桥正在运行; 先点「停止」, 再修改设置";
+    hint.textContent = "这座桥正在运行; 点上方「停止」解锁修改, 改完「保存并启动」自动恢复运行";
     hint.classList.add("show");
   } else hint.classList.remove("show");
 }
@@ -1971,6 +2022,7 @@ $("npName").addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.p
 
 $("btnCfScan").addEventListener("click", () => scanInto($("cfPort")));
 $("btnCfSave").addEventListener("click", saveCfg);
+$("drToggle").addEventListener("click", () => { if (drawerId) toggleBridge(drawerId); }); /* F3: 与卡片同一停/启路径 */
 ["cfBaud", "cfListen"].forEach((id) => $(id).addEventListener("input", () => { $(id).classList.remove("invalid"); updateCfDerived(); }));
 ["cfData", "cfParity", "cfStop", "cfFlow", "cfMax", "cfPort", "cfAuto"].forEach((id) => $(id).addEventListener("change", updateCfDerived));
 $("btnCfCopyCmd").addEventListener("click", () => copyText($("cfEquiv").textContent, $("btnCfCopyCmd")));
