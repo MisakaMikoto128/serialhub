@@ -17,6 +17,7 @@
 | 自动重连 | 串口拔出/重枚举按 1s 节奏自动重连, 重试次数实时可见, 恢复后客户端零动作续传; 每桥可独立开关 |
 | 串口全参数 | 110~2,000,000 波特, 数据位 7/8, 校验 N/E/O, 停止位 1/2, 流控 none/rtscts/xonxoff |
 | 桌面客户端 | 原生窗口 + 系统托盘 (关窗即退到后台); `--headless` 纯 CLI 模式供脚本与 CI |
+| 主题插件 | exe 旁 `themes/` 放一个 .css 就是一套主题; 内置浅色/深色/示例·奥利奥/Windows 95, 管理台无刷新切换 |
 | CLI ⇄ UI 对等 | 每个配置项两端都有; 管理台一键复制与当前配置等价的启动命令 |
 
 ## 快速开始
@@ -93,6 +94,8 @@ in both directions, broadcast to every connected client.
   1/2 stop bits, none/rtscts/xonxoff flow control; CLI and UI fully equivalent.
 - **Desktop client or headless** — native window with tray (close-to-tray), or
   `--headless` for scripts and CI.
+- **Theme plugins** — drop a `.css` into `themes/` and it appears in the console;
+  four built-ins including a Windows 95 tribute.
 
 Grab a prebuilt binary from [Releases](../../releases) or run
 `cargo install --path .`, then open `http://127.0.0.1:8080`. Docs are in
