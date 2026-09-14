@@ -16,9 +16,15 @@ import urllib.request
 
 import websockets
 
-from conftest import free_tcp_port, kill_all_bridges, read_exactly
-
-EXE = r"C:\Users\liuyu\Desktop\WorkPlace\serialhub\target\release\serialhub.exe"
+# Sprint 11 修订 (QA, 2026-09-14, 环境适配注记, 行为零放宽):
+# 1) EXE 改走 conftest.BRIDGE_EXE —— 吃 SERIALHUB_EXE 覆盖 (旁路构建), 不再硬编码旧路径;
+# 2) 换址目标 8081/8085/8087 硬编码 → 动态空闲口 —— 本机 GameViewerServer 外联残留
+#    占 8087 元组 (bind 10013)、用户实例桥数据口占 8081, 硬编码口在共享机器上必然互撞;
+#    换绑"换到不同地址"的被测语义不变;
+# 3) "恰 1 个 serialhub 进程"断言 → 外来感知差集 (conftest.FOREIGN_PIDS) ——
+#    断言意图是"换绑不 spawn 新进程", 并行席位/用户实例不计入。
+from conftest import BRIDGE_EXE as EXE
+from conftest import FOREIGN_PIDS, free_tcp_port, kill_all_bridges, read_exactly
 S3_OLD_LOG = r"C:\Users\liuyu\AppData\Local\Temp\qa_fix\s3_old.log"
 
 
@@ -130,17 +136,18 @@ def test_fr9a_restart_e2e(make_peer):
     # --no-fleet (Sprint 7 收口加): FR-13 起老式进程会把 manager addr/桥持久化到全局
     # fleet.json 且启动时恢复既有桥 —— 全局清单一旦混入非测试桥即 409 污染本用例。
     # 换绑机制被测行为不受该开关影响 (沿 conftest start_bridge 老式语义)。
-    p_old = subprocess.Popen([EXE, "--port", "COM2", "--addr", "127.0.0.1:8081",
+    p_mgr, p_new = free_tcp_port(), free_tcp_port()
+    p_old = subprocess.Popen([EXE, "--port", "COM2", "--addr", f"127.0.0.1:{p_mgr}",
                               "--max-clients", "3", "--flow", "xonxoff", "--no-fleet"],
                              stdout=log, stderr=subprocess.STDOUT)
     try:
-        st = wait_status(8081)
+        st = wait_status(p_mgr)
         assert st and st["phase"] == "open", f"旧实例应 open: {st!r}"
         assert st["maxClients"] == 3, f"maxClients 应为 3: {st['maxClients']!r}"
         time.sleep(1.0)                                       # WebView 控制台自连
 
-        data = json.dumps({"addr": "127.0.0.1:8085"}).encode()
-        req = urllib.request.Request("http://127.0.0.1:8081/api/restart", data=data,
+        data = json.dumps({"addr": f"127.0.0.1:{p_new}"}).encode()
+        req = urllib.request.Request(f"http://127.0.0.1:{p_mgr}/api/restart", data=data,
                                      headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=3) as r:
             code, body = r.status, json.loads(r.read().decode())
@@ -150,22 +157,22 @@ def test_fr9a_restart_e2e(make_peer):
         # ADR-12: 原地换绑 —— 进程不退, 同 PID 继续服务新地址
         time.sleep(1.0)
         assert p_old.poll() is None, "换址不应终止原进程 (原地换绑)"
-        new_st = wait_status(8085, timeout=6)
-        assert new_st, "6s 内新地址 8085 未就绪"
+        new_st = wait_status(p_new, timeout=6)
+        assert new_st, f"6s 内新地址 {p_new} 未就绪"
         assert new_st["phase"] == "open", f"换址后 phase 应保持 open: {new_st!r}"
         assert new_st["port"] == "COM2", f"port 应保留 COM2: {new_st['port']!r}"
         assert new_st["baud"] == 115200, f"baud 应保留: {new_st['baud']!r}"
         assert new_st["config"] == "8N2", f"config 应保留: {new_st['config']!r}"
         assert new_st["maxClients"] == 3, f"maxClients 应保留 3: {new_st['maxClients']!r}"
 
-        # 同进程身份: 恰 1 个 serialhub 进程且就是原 PID
-        pids = serialhub_pids()
+        # 同进程身份: 本会话恰 1 个 serialhub 进程且就是原 PID (外来实例差集剔除, Sprint 11)
+        pids = [p for p in serialhub_pids() if p not in FOREIGN_PIDS]
         assert len(pids) == 1 and pids[0] == p_old.pid,             f"原地换绑不产生新进程: {pids} (原 {p_old.pid})"
 
         # 数据面恢复 + flow 保留 (xonxoff 到串口): WS 发可打印图案 → COM1 对端逐字节收到
         pattern = bytes((0x20 + (i % 0x5f)) for i in range(256))   # 避开 XON(0x11)/XOFF(0x13)
         async def _send():
-            async with websockets.connect("ws://127.0.0.1:8085/ws", max_size=None) as ws:
+            async with websockets.connect(f"ws://127.0.0.1:{p_new}/ws", max_size=None) as ws:
                 await ws.send(pattern)
                 await asyncio.sleep(0.5)
         asyncio.run(_send())
@@ -185,13 +192,14 @@ def test_fr9a_restart_headless_guard(start_bridge):
     b.wait_phase("open")
     old_port = b.http_port
     st0 = b.status()
-    code, body = b.post("/api/restart", {"addr": "127.0.0.1:8087"})
+    p_new = free_tcp_port()
+    code, body = b.post("/api/restart", {"addr": f"127.0.0.1:{p_new}"})
     assert code == 200 and body == {"ok": True},         f"ADR-12 headless 换址应 200 {{'ok':true}}: {code} {body!r}"
-    new_st = wait_status(8087, timeout=6)
-    assert new_st, "6s 内新地址 8087 应就绪 (原地换绑, 非 spawn)"
+    new_st = wait_status(p_new, timeout=6)
+    assert new_st, f"6s 内新地址 {p_new} 应就绪 (原地换绑, 非 spawn)"
     assert new_st["phase"] == st0["phase"] and new_st["port"] == st0["port"],         f"串口会话应保持: {st0!r} -> {new_st!r}"
     time.sleep(1.0)
-    pids = serialhub_pids()
+    pids = [p for p in serialhub_pids() if p not in FOREIGN_PIDS]
     assert len(pids) == 1, f"换址不产生新进程: {pids}"
     try:
         urllib.request.urlopen(f"http://127.0.0.1:{old_port}/api/status", timeout=2)
@@ -201,7 +209,7 @@ def test_fr9a_restart_headless_guard(start_bridge):
     except Exception:
         pass
     urllib.request.urlopen(urllib.request.Request(
-        "http://127.0.0.1:8087/api/shutdown", data=b""), timeout=3).read()
+        f"http://127.0.0.1:{p_new}/api/shutdown", data=b""), timeout=3).read()
 
 
 

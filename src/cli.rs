@@ -8,10 +8,6 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use crate::config::{parse_config_str, validate_baud, Flow, Parity};
-#[cfg(test)]
-use crate::config::SerialConfig;
-#[cfg(test)]
-use crate::service::Startup;
 
 pub const USAGE: &str = "\
 SerialHub — 串口 <-> WebSocket 桥接管理器 (内嵌 Web 控制台)
@@ -78,26 +74,8 @@ impl Cli {
     pub fn auto_open(&self) -> bool {
         self.port.is_some() && !self.no_open
     }
-
-    /// 派生 legacy 单桥服务参数 (Sprint 4 起仅测试使用; 生产路径走
-    /// fleet::ManagerStartup::from_cli, FR-10h)。
-    #[cfg(test)]
-    pub fn startup(&self) -> Startup {
-        Startup {
-            cfg: SerialConfig {
-                port: self.port.clone().unwrap_or_default(),
-                baud: self.baud,
-                data_bits: self.data_bits,
-                parity: self.parity,
-                stop_bits: self.stop_bits,
-                flow: Flow::None,
-            },
-            auto_open: self.auto_open(),
-            addr: self.addr,
-            max_clients: self.max_clients,
-            flow: self.flow,
-        }
-    }
+    // (原 Cli::startup —— 派生 legacy 单桥 Startup 的辅助, Sprint 4 FR-10 改走
+    //  fleet::ManagerStartup::from_cli 后再无调用方, clippy 清债时删除。)
 }
 
 pub fn parse(args: &[String]) -> Result<Cli, String> {
@@ -196,9 +174,9 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
     if headless && gui_flag {
         return Err("--headless 与 --gui 互斥, 只能二选一".into());
     }
-    let addr: SocketAddr = addr_str.parse().map_err(|_| {
-        format!("--addr 不是合法地址 (形如 127.0.0.1:8080): \"{addr_str}\"")
-    })?;
+    let addr: SocketAddr = addr_str
+        .parse()
+        .map_err(|_| format!("--addr 不是合法地址 (形如 127.0.0.1:8080): \"{addr_str}\""))?;
 
     Ok(Cli {
         port,
@@ -330,7 +308,7 @@ mod tests {
         assert_eq!(c.fleet.unwrap().to_string_lossy(), "relative.json");
         assert!(parse_str("--fleet").is_err()); // 缺值
         assert!(parse_str("--fleet  ").is_err()); // 空值
-        // --no-fleet 与 --fleet 可并存, --no-fleet 优先 (语义在 from_cli 里收敛)
+                                                  // --no-fleet 与 --fleet 可并存, --no-fleet 优先 (语义在 from_cli 里收敛)
         let c = parse_str("--fleet a.json --no-fleet").unwrap();
         assert!(c.no_fleet);
     }

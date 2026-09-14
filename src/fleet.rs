@@ -129,10 +129,7 @@ impl Bridge {
     }
 
     pub fn name(&self) -> String {
-        self.name
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.name.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn set_name(&self, n: String) {
@@ -238,11 +235,7 @@ async fn bridge_ws(ws: WebSocketUpgrade, State(b): State<Arc<Bridge>>) -> Respon
 /// 桥数据面 serve 主循环 (FR-10f 端点稳定):
 /// - 优雅停机 (stop/删除/进程退出) → 退出循环 → 释放串口;
 /// - serve 异常 (listener 死亡等) → 按 1s 间隔重绑**同一端口**, hub/监督任务全程不动。
-async fn bridge_serve(
-    bridge: Arc<Bridge>,
-    listener: TcpListener,
-    stop_rx: watch::Receiver<bool>,
-) {
+async fn bridge_serve(bridge: Arc<Bridge>, listener: TcpListener, stop_rx: watch::Receiver<bool>) {
     let id = bridge.id.clone();
     let mut pending = Some(listener);
     loop {
@@ -334,6 +327,10 @@ pub struct BridgeManager {
     manager_addr: Mutex<Option<SocketAddr>>,
     /// 恢复 fleet 期间抑制 persist (避免把"暂时绑不上"的桥从清单里抹掉)。
     persist_suppressed: AtomicBool,
+    /// ADR-22①: 启动时从 fleet.json 读到的 [window] 段 —— persist 原样写回,
+    /// 保证桥变更不再抹掉 GUI 的窗口几何 (真实退出时 GUI 经 save_window 更新它)。
+    /// 运行期只有 restore_fleet 写一次; headless 同样只透传 (不产生新值)。
+    window_seen: RwLock<Option<WindowRec>>,
     next_id: AtomicU64,
 }
 
@@ -344,6 +341,7 @@ impl BridgeManager {
             fleet_path,
             manager_addr: Mutex::new(None),
             persist_suppressed: AtomicBool::new(false),
+            window_seen: RwLock::new(None),
             next_id: AtomicU64::new(1),
         }
     }
@@ -505,7 +503,10 @@ impl BridgeManager {
         let _ = b.stop_tx.send(true);
         let h = lock_mutex(&b.serve_handle).take();
         if let Some(h) = h {
-            if tokio::time::timeout(Duration::from_secs(2), h).await.is_err() {
+            if tokio::time::timeout(Duration::from_secs(2), h)
+                .await
+                .is_err()
+            {
                 eprintln!("serialhub: 桥 {} 数据面停机超时 (仍有客户端未退)", b.id);
             }
         }
@@ -555,8 +556,12 @@ impl BridgeManager {
         }
         let Some(path) = &self.fleet_path else { return };
         let recs: Vec<FleetBridgeRec> = self.snapshot().iter().map(rec_of_bridge).collect();
-        let manager = self.manager_addr().map(|a| ManagerRec { addr: a.to_string() });
-        if let Err(e) = save_fleet(path, &recs, manager.as_ref()) {
+        let manager = self.manager_addr().map(|a| ManagerRec {
+            addr: a.to_string(),
+        });
+        // ADR-22①: [window] 段透传 (启动时读到的现值) —— 桥变更不抹窗口几何
+        let window = *rd(&self.window_seen);
+        if let Err(e) = save_fleet(path, &recs, manager.as_ref(), window.as_ref()) {
             eprintln!("serialhub: fleet 清单写入失败 ({path:?}): {e}");
         }
     }
@@ -648,6 +653,22 @@ pub(crate) struct ManagerRec {
     pub addr: String,
 }
 
+/// ADR-22①: fleet.json 顶层 [window] 段 —— GUI 主窗口几何记忆。
+/// 归属 fleet.json 理由: 它已是本机状态的单一事实来源 (ADR-22①裁定),
+/// 不再开第二个配置文件。x/y = 窗口外框左上角 (物理像素), w/h = 客户区
+/// (inner) 尺寸 (物理像素, 与恢复接口 with_inner_size 同口径, 避免标题栏
+/// 高度逐次累积); maximized 单独记, x/y/w/h 恒存"还原态"几何 —— 最大化
+/// 期间采样跳过, 用户取消最大化后落回正确位置。headless 不写不读。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub(crate) struct WindowRec {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+    #[serde(default)] // 旧版段可能没有此字段 → 非最大化
+    pub maximized: bool,
+}
+
 #[derive(Serialize, Deserialize)]
 pub(crate) struct FleetFile {
     version: u32,
@@ -656,6 +677,10 @@ pub(crate) struct FleetFile {
     /// FR-13: 旧清单无此字段 → default None 兼容; 写出时空段跳过。
     #[serde(default, rename = "manager", skip_serializing_if = "Option::is_none")]
     manager: Option<ManagerRec>,
+    /// ADR-22①: 旧清单无此字段 → default None 兼容; 写出时空段跳过
+    /// (headless 从不产生该段; GUI 真实退出时经 save_window 落盘)。
+    #[serde(default, rename = "window", skip_serializing_if = "Option::is_none")]
+    window: Option<WindowRec>,
 }
 
 /// 原子写: 临时文件 + 改名覆盖 (进程中途被杀不会留下半截清单)。
@@ -663,6 +688,7 @@ pub(crate) fn save_fleet(
     path: &Path,
     bridges: &[FleetBridgeRec],
     manager: Option<&ManagerRec>,
+    window: Option<&WindowRec>,
 ) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         if !dir.as_os_str().is_empty() {
@@ -673,6 +699,7 @@ pub(crate) fn save_fleet(
         version: 1,
         bridges: bridges.to_vec(),
         manager: manager.cloned(),
+        window: window.copied(),
     })
     .map_err(|e| format!("序列化失败: {e}"))?;
     let tmp = path.with_extension("json.tmp");
@@ -686,7 +713,32 @@ pub(crate) fn load_fleet_file(path: &Path) -> Result<FleetFile, String> {
     serde_json::from_str(&body).map_err(|e| format!("解析失败: {e}"))
 }
 
-/// 桥记录读取 (旧接口; [manager] 段请走 load_fleet_file)。
+/// ADR-22①: 读 [window] 段 (GUI 启动恢复用)。文件不存在 / 无该段 → Ok(None);
+/// 文件存在但解析失败 → Err (调用方记日志后按无记忆启动, 不得覆盖坏文件)。
+pub(crate) fn load_window(path: &Path) -> Result<Option<WindowRec>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    Ok(load_fleet_file(path)?.window)
+}
+
+/// ADR-22①: 只替换 [window] 段 (GUI 真实退出时调用) —— 读整文件 → 换 window →
+/// 经 save_fleet 同一原子通道写回 (bridges/[manager] 段原样保留, 变更即存口径)。
+/// 文件存在但解析失败 → 拒写 (宁丢一次窗口几何, 不覆盖用户清单), 错误由调用方记日志。
+pub(crate) fn save_window(path: &Path, w: WindowRec) -> Result<(), String> {
+    let (bridges, manager) = if path.exists() {
+        let ff = load_fleet_file(path)?;
+        (ff.bridges, ff.manager)
+    } else {
+        // 首次退出尚无清单 (从未建过桥): 建一个只含 window 段的最小清单
+        (Vec::new(), None)
+    };
+    save_fleet(path, &bridges, manager.as_ref(), Some(&w))
+}
+
+/// 桥记录读取 (restore_fleet 已改走 load_fleet_file 以顺带取 [window] 段;
+/// 本函数现仅测试断言用, 随测试编译)。
+#[cfg(test)]
 pub(crate) fn load_fleet(path: &Path) -> Result<Vec<FleetBridgeRec>, String> {
     Ok(load_fleet_file(path)?.bridges)
 }
@@ -706,12 +758,19 @@ fn rec_of_bridge(b: &Arc<Bridge>) -> FleetBridgeRec {
 /// 启动恢复 (FR-10b): fleet.json 存在则恢复全部桥。
 /// 单条记录非法 → 跳过并告警; 绑不上端口 → lenient 模式以 stopped+lastError 入队。
 async fn restore_fleet(mgr: &Arc<BridgeManager>) -> usize {
-    let Some(path) = mgr.fleet_path.clone() else { return 0 };
+    let Some(path) = mgr.fleet_path.clone() else {
+        return 0;
+    };
     if !path.exists() {
         return 0;
     }
-    let recs = match load_fleet(&path) {
-        Ok(r) => r,
+    let recs = match load_fleet_file(&path) {
+        Ok(ff) => {
+            // ADR-22①: [window] 段登记到管理器 —— persist 时原样写回,
+            // 运行期桥变更不再抹掉 GUI 的窗口几何 (真实退出时 GUI 才更新它)。
+            *wr(&mgr.window_seen) = ff.window;
+            ff.bridges
+        }
         Err(e) => {
             eprintln!("serialhub: fleet 清单无法读取 ({path:?}): {e} —— 以空桥队启动");
             return 0;
@@ -760,7 +819,11 @@ async fn restore_fleet(mgr: &Arc<BridgeManager>) -> usize {
                     b.id,
                     b.name(),
                     b.listen_addr(),
-                    if b.is_running() { "" } else { " (端口暂不可用, 已停止)" }
+                    if b.is_running() {
+                        ""
+                    } else {
+                        " (端口暂不可用, 已停止)"
+                    }
                 );
             }
             Err(e) => eprintln!("serialhub: 恢复桥 {} 失败: {e}", rec.id),
@@ -859,7 +922,9 @@ pub(crate) fn parse_listen(s: &str) -> Result<SocketAddr, String> {
     if let Ok(p) = t.parse::<u16>() {
         return Ok(SocketAddr::from(([127, 0, 0, 1], p)));
     }
-    Err(format!("listen 地址无效: \"{t}\" (形如 127.0.0.1:8101 或 8101)"))
+    Err(format!(
+        "listen 地址无效: \"{t}\" (形如 127.0.0.1:8101 或 8101)"
+    ))
 }
 
 /// 兼容桥数据端口选址: 从管理台端口 +1 起向上探测首个空闲端口 (最多 20 个),
@@ -1594,13 +1659,16 @@ pub async fn run_manager_with(
 
     // FR-13: 清单已存在时同步一次 [manager] 段 (现地址入档; 不新建文件 ——
     // 全新安装首次落盘仍以首次桥变更为准, 避免无谓写文件)
-    if mgr.fleet_path.as_ref().map_or(false, |p| p.exists()) {
+    if mgr.fleet_path.as_ref().is_some_and(|p| p.exists()) {
         mgr.persist();
     }
 
     // FR-14: 主题目录初始化 (默认 exe 旁 themes/; --themes-dir 可指定)。
     // 失败不致命: 管理台照常服务, 主题列表为空 (/themes 端点按现状 404)。
-    let themes_dir = su.themes_dir.clone().unwrap_or_else(crate::themes::default_themes_dir);
+    let themes_dir = su
+        .themes_dir
+        .clone()
+        .unwrap_or_else(crate::themes::default_themes_dir);
     if let Err(e) = crate::themes::ensure_builtin(&themes_dir) {
         eprintln!("serialhub: 主题目录初始化失败 ({themes_dir:?}): {e} (FR-14)");
     }
@@ -1891,7 +1959,7 @@ mod tests {
                 flow: "rtscts".into(),
             },
         }];
-        save_fleet(&path, &recs, None).unwrap();
+        save_fleet(&path, &recs, None, None).unwrap();
         let back = load_fleet(&path).unwrap();
         assert_eq!(back, recs);
         assert!(!back[0].auto_reconnect, "autoReconnect 原样往返 (FR-12)");
@@ -1916,6 +1984,7 @@ mod tests {
             Some(&ManagerRec {
                 addr: "127.0.0.1:8100".into(),
             }),
+            None,
         )
         .unwrap();
         let f = load_fleet_file(&path).unwrap();
@@ -1926,7 +1995,7 @@ mod tests {
             })
         );
         // 无段写入 → 读回 None (写出时空段跳过)
-        save_fleet(&path, &recs, None).unwrap();
+        save_fleet(&path, &recs, None, None).unwrap();
         let f = load_fleet_file(&path).unwrap();
         assert_eq!(f.manager, None);
         // 旧式清单 (无 manager 字段) 也能解析
@@ -1934,6 +2003,122 @@ mod tests {
         let f = load_fleet_file(&path).unwrap();
         assert_eq!(f.manager, None);
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// ADR-22①: [window] 段往返 —— 写入/读取原样; 旧清单无该段 → None 兼容;
+    /// 写出时 None 段跳过 (headless 永不产生 window 段)。
+    #[test]
+    fn fleet_file_window_rec_roundtrip() {
+        let path = std::env::temp_dir().join(format!("sh_fleet_win_{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let recs: Vec<FleetBridgeRec> = Vec::new();
+        let win = WindowRec {
+            x: -8,
+            y: 160,
+            w: 1120,
+            h: 700,
+            maximized: true,
+        };
+        // 带段写入 → 读回原样 (字段名即契约: x/y/w/h/maximized)
+        save_fleet(&path, &recs, None, Some(&win)).unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("\"window\""), "段名 window");
+        assert!(body.contains("\"maximized\""), "字段名 maximized");
+        assert_eq!(load_window(&path).unwrap(), Some(win));
+        // 无段写入 → 读回 None (写出时空段跳过)
+        save_fleet(&path, &recs, None, None).unwrap();
+        let f = load_fleet_file(&path).unwrap();
+        assert_eq!(f.window, None);
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("window"));
+        // 旧式清单 (无 window 字段) 也能解析; 缺 maximized 字段 → false
+        std::fs::write(
+            &path,
+            r#"{"version":1,"bridges":[],"window":{"x":10,"y":20,"w":800,"h":600}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            load_window(&path).unwrap(),
+            Some(WindowRec {
+                x: 10,
+                y: 20,
+                w: 800,
+                h: 600,
+                maximized: false
+            })
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// ADR-22①: save_window 只替换 [window] 段 —— bridges/[manager] 原样保留;
+    /// 无清单文件时建最小清单; 坏清单拒写 (不得覆盖用户文件)。
+    #[test]
+    fn save_window_updates_only_window_section() {
+        let path =
+            std::env::temp_dir().join(format!("sh_fleet_savewin_{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        // 预置: 1 桥 + manager 段 + 旧 window
+        let recs = vec![FleetBridgeRec {
+            id: "b1".into(),
+            name: "CLI".into(),
+            auto_open: false,
+            auto_reconnect: true,
+            max_clients: 0,
+            listen: "127.0.0.1:8081".into(),
+            serial: SerialRec {
+                port: "COM1".into(),
+                baud: 115200,
+                data_bits: 8,
+                parity: "N".into(),
+                stop_bits: 2,
+                flow: "none".into(),
+            },
+        }];
+        let mgr = ManagerRec {
+            addr: "127.0.0.1:8080".into(),
+        };
+        save_fleet(
+            &path,
+            &recs,
+            Some(&mgr),
+            Some(&WindowRec {
+                x: 0,
+                y: 0,
+                w: 640,
+                h: 480,
+                maximized: false,
+            }),
+        )
+        .unwrap();
+        // 换 window: 桥与 manager 不动, window 更新
+        let nw = WindowRec {
+            x: 137,
+            y: 92,
+            w: 1000,
+            h: 640,
+            maximized: true,
+        };
+        save_window(&path, nw).unwrap();
+        assert_eq!(load_window(&path).unwrap(), Some(nw));
+        let ff = load_fleet_file(&path).unwrap();
+        assert_eq!(ff.bridges, recs, "bridges 原样保留");
+        assert_eq!(ff.manager, Some(mgr), "[manager] 段原样保留");
+        // 首次退出尚无清单 → 建只含 window 的最小清单
+        let empty = std::env::temp_dir().join(format!(
+            "sh_fleet_savewin_empty_{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&empty);
+        save_window(&empty, nw).unwrap();
+        let ff = load_fleet_file(&empty).unwrap();
+        assert!(ff.bridges.is_empty() && ff.manager.is_none() && ff.window == Some(nw));
+        let _ = std::fs::remove_file(&empty);
+        // 坏清单拒写: 解析失败 → Err, 文件一字不动
+        std::fs::write(&path, "{not json").unwrap();
+        assert!(save_window(&path, nw).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{not json");
+        // 缺失文件读 window → None (不报错)
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(load_window(&path).unwrap(), None);
     }
 
     #[test]
@@ -2203,10 +2388,7 @@ mod tests {
             if let Some(b) = mgr.single_bridge() {
                 return b;
             }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "等待兼容桥超时"
-            );
+            assert!(tokio::time::Instant::now() < deadline, "等待兼容桥超时");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }
@@ -2398,7 +2580,13 @@ mod tests {
         assert_eq!(v["bridge"]["name"], "改名");
         assert_eq!(v["bridge"]["maxClients"], 3);
         // 非法配置整体拒绝, 文件不变
-        let (code, _) = http_req(t.addr, "POST", "/api/fleet/b1/config", Some(r#"{"baud":50}"#)).await;
+        let (code, _) = http_req(
+            t.addr,
+            "POST",
+            "/api/fleet/b1/config",
+            Some(r#"{"baud":50}"#),
+        )
+        .await;
         assert_eq!(code, 400);
         let recs = load_fleet(&path).unwrap();
         assert_eq!(recs[0].serial.baud, 115_200);
@@ -2428,7 +2616,11 @@ mod tests {
     async fn fleet_delete_updates_persisted_file() {
         let path = temp_fleet("del");
         let t = spawn_mgr(Some(path.clone()), None).await;
-        fleet_create_ok(t.addr, r#"{"name":"一","listen":"127.0.0.1:0","autoOpen":false}"#).await;
+        fleet_create_ok(
+            t.addr,
+            r#"{"name":"一","listen":"127.0.0.1:0","autoOpen":false}"#,
+        )
+        .await;
         assert_eq!(load_fleet(&path).unwrap().len(), 1);
         let (code, _) = http_req(t.addr, "POST", "/api/fleet/b1/delete", None).await;
         assert_eq!(code, 200);
@@ -2475,7 +2667,7 @@ mod tests {
                 },
             },
         ];
-        save_fleet(&path, &recs, None).unwrap();
+        save_fleet(&path, &recs, None, None).unwrap();
         let t = spawn_mgr(Some(path.clone()), None).await;
         let (_, resp) = http_req(t.addr, "GET", "/api/fleet", None).await;
         let v: Value = serde_json::from_str(&resp).unwrap();
@@ -2484,7 +2676,10 @@ mod tests {
         assert_eq!(arr[0]["id"], "b1");
         assert_eq!(arr[0]["name"], "一号");
         assert_eq!(arr[0]["serial"]["port"], "COM9");
-        assert!(arr[0]["listen"].as_str().unwrap() != "127.0.0.1:0", "应回填实际端口");
+        assert!(
+            arr[0]["listen"].as_str().unwrap() != "127.0.0.1:0",
+            "应回填实际端口"
+        );
         assert_eq!(arr[1]["serial"]["baud"], 9600);
         assert_eq!(arr[1]["maxClients"], 2);
         // FR-12: autoReconnect 随清单恢复, 不丢
@@ -2537,7 +2732,11 @@ mod tests {
         let (code, _) = http_req(t.addr, "GET", "/api/ports", None).await;
         assert_eq!(code, 200);
         // 第二座桥出现 → 旧端点转入 409
-        fleet_create_ok(t.addr, r#"{"name":"二桥","listen":"127.0.0.1:0","autoOpen":false}"#).await;
+        fleet_create_ok(
+            t.addr,
+            r#"{"name":"二桥","listen":"127.0.0.1:0","autoOpen":false}"#,
+        )
+        .await;
         let (code, _) = http_req(t.addr, "GET", "/api/status", None).await;
         assert_eq!(code, 409, "多桥时旧单桥端点应拒绝");
         let (code, resp) = http_req(t.addr, "POST", "/api/open", None).await;
@@ -2579,25 +2778,14 @@ mod tests {
         let v: Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(v["maxClients"], 1, "CLI 初值");
         // 非 0 生效
-        let (code, resp) = http_req(
-            t.addr,
-            "POST",
-            "/api/config",
-            Some(r#"{"maxClients":4}"#),
-        )
-        .await;
+        let (code, resp) =
+            http_req(t.addr, "POST", "/api/config", Some(r#"{"maxClients":4}"#)).await;
         assert_eq!(code, 200, "{resp}");
         let (_, resp) = http_req(t.addr, "GET", "/api/status", None).await;
         let v: Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(v["maxClients"], 4, "POST /api/config maxClients 须生效");
         // 0 = 不限
-        let (code, _) = http_req(
-            t.addr,
-            "POST",
-            "/api/config",
-            Some(r#"{"maxClients":0}"#),
-        )
-        .await;
+        let (code, _) = http_req(t.addr, "POST", "/api/config", Some(r#"{"maxClients":0}"#)).await;
         assert_eq!(code, 200);
         let (_, resp) = http_req(t.addr, "GET", "/api/status", None).await;
         let v: Value = serde_json::from_str(&resp).unwrap();
@@ -2638,7 +2826,11 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn fleet_tap_is_readonly_side_channel() {
         let t = spawn_mgr(None, None).await;
-        fleet_create_ok(t.addr, r#"{"name":"t","listen":"127.0.0.1:0","autoOpen":false}"#).await;
+        fleet_create_ok(
+            t.addr,
+            r#"{"name":"t","listen":"127.0.0.1:0","autoOpen":false}"#,
+        )
+        .await;
         let b = t.mgr.get("b1").unwrap();
         let (txq_tx, txq_rx) = std_mpsc::channel::<Vec<u8>>();
         b.ctx.set_tx(txq_tx);
@@ -2712,8 +2904,16 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn bridge_data_planes_are_isolated() {
         let t = spawn_mgr(None, None).await;
-        fleet_create_ok(t.addr, r#"{"name":"一","listen":"127.0.0.1:0","autoOpen":false}"#).await;
-        fleet_create_ok(t.addr, r#"{"name":"二","listen":"127.0.0.1:0","autoOpen":false}"#).await;
+        fleet_create_ok(
+            t.addr,
+            r#"{"name":"一","listen":"127.0.0.1:0","autoOpen":false}"#,
+        )
+        .await;
+        fleet_create_ok(
+            t.addr,
+            r#"{"name":"二","listen":"127.0.0.1:0","autoOpen":false}"#,
+        )
+        .await;
         let (_, resp) = http_req(t.addr, "GET", "/api/fleet", None).await;
         let v: Value = serde_json::from_str(&resp).unwrap();
         let arr = v["bridges"].as_array().unwrap();
@@ -2723,21 +2923,11 @@ mod tests {
         // 连 b1 的客户端: 只收 b1 的 RX
         let mut ws1 = ws_handshake(p1, "/ws").await;
         // b2 无客户端订阅 → send 返回 SendError 属正常 (读循环不反压, 无人收即弃)
-        let _ = t
-            .mgr
-            .get("b2")
-            .unwrap()
-            .ctx
-            .bc_tx
-            .send(b"from-b2".to_vec());
+        let _ = t.mgr.get("b2").unwrap().ctx.bc_tx.send(b"from-b2".to_vec());
         let mut tmp = [0u8; 64];
         let r = tokio::time::timeout(Duration::from_millis(250), ws1.read(&mut tmp)).await;
         assert!(r.is_err(), "b2 的广播不得泄漏到 b1 的客户端");
-        wait_receiver(
-            &t.mgr.get("b1").unwrap().ctx.bc_tx,
-            Duration::from_secs(2),
-        )
-        .await;
+        wait_receiver(&t.mgr.get("b1").unwrap().ctx.bc_tx, Duration::from_secs(2)).await;
         t.mgr
             .get("b1")
             .unwrap()
@@ -2756,7 +2946,14 @@ mod tests {
     #[tokio::test]
     async fn bridge_rate_shows_in_detail() {
         // 独立 Bridge (无管理器采样任务干扰): push 可控时间戳
-        let b = Bridge::new("bx".into(), "t".into(), SerialConfig::default(), false, true, 0);
+        let b = Bridge::new(
+            "bx".into(),
+            "t".into(),
+            SerialConfig::default(),
+            false,
+            true,
+            0,
+        );
         let t0 = Instant::now();
         lock_mutex(&b.rates).push(t0, 0, 0);
         b.hub.add_rx(500);
@@ -2774,7 +2971,11 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn manager_sampler_feeds_rate_window() {
         let t = spawn_mgr(None, None).await;
-        fleet_create_ok(t.addr, r#"{"name":"s","listen":"127.0.0.1:0","autoOpen":false}"#).await;
+        fleet_create_ok(
+            t.addr,
+            r#"{"name":"s","listen":"127.0.0.1:0","autoOpen":false}"#,
+        )
+        .await;
         let b = t.mgr.get("b1").unwrap();
         b.hub.add_rx(1234);
         // 等采样任务至少推一个点 (200ms 节拍; 900ms ≈ 3+ 周期, 抗并行调度抖动),
@@ -2856,15 +3057,19 @@ mod tests {
             "lastError",
             "uptimeSec",
             "maxClients",
-            "retries",        // ADR-15① 新增 (13→14)
-            "autoReconnect",  // ADR-16① 新增 (14→15)
+            "retries",       // ADR-15① 新增 (13→14)
+            "autoReconnect", // ADR-16① 新增 (14→15)
         ]
         .into_iter()
         .collect();
         let known_extra: HashSet<&str> = ["running", "autoOpen"].into_iter().collect();
         let check = |row: &Value, where_: &str| {
-            let got: HashSet<&str> =
-                row.as_object().unwrap().keys().map(|s| s.as_str()).collect();
+            let got: HashSet<&str> = row
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(|s| s.as_str())
+                .collect();
             let missing: Vec<_> = want.difference(&got).collect();
             assert!(missing.is_empty(), "{where_} 缺契约字段 {missing:?}: {row}");
             let unknown: Vec<_> = got
@@ -2978,7 +3183,13 @@ mod tests {
         let v: Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(v["bridge"]["autoReconnect"], false);
         // 兼容端点重开
-        let (code, _) = http_req(t.addr, "POST", "/api/config", Some(r#"{"autoReconnect":true}"#)).await;
+        let (code, _) = http_req(
+            t.addr,
+            "POST",
+            "/api/config",
+            Some(r#"{"autoReconnect":true}"#),
+        )
+        .await;
         assert_eq!(code, 200);
         let (_, resp) = http_req(t.addr, "GET", "/api/status", None).await;
         let v: Value = serde_json::from_str(&resp).unwrap();
@@ -3020,7 +3231,13 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn manager_addr_rebind_persists_and_restores() {
         let path = temp_fleet("mgraddr");
-        let t = spawn_mgr_opt(Some(path.clone()), None, "127.0.0.1:0".parse().unwrap(), false).await;
+        let t = spawn_mgr_opt(
+            Some(path.clone()),
+            None,
+            "127.0.0.1:0".parse().unwrap(),
+            false,
+        )
+        .await;
         // 先建一座桥: 换绑管理台不得影响桥数据面 (FR-13 硬边界)
         let v = fleet_create_ok(
             t.addr,
@@ -3069,7 +3286,7 @@ mod tests {
                 ServiceEvent::Ready(a) => Some(*a),
                 _ => None,
             })
-            .last()
+            .next_back()
             .expect("至少一次 Ready");
         assert_eq!(last_ready, new_addr, "换绑成功后须发 Ready(新地址)");
         // 非法地址 → 400 (原地址继续服务)
@@ -3084,12 +3301,24 @@ mod tests {
         t.shutdown().await;
 
         // 重启恢复: 未显式 --addr → 控制面回到持久化地址
-        let t2 = spawn_mgr_opt(Some(path.clone()), None, "127.0.0.1:0".parse().unwrap(), false).await;
+        let t2 = spawn_mgr_opt(
+            Some(path.clone()),
+            None,
+            "127.0.0.1:0".parse().unwrap(),
+            false,
+        )
+        .await;
         assert_eq!(t2.addr, new_addr, "重启后应恢复 [manager] 持久化地址");
         t2.shutdown().await;
 
         // 显式 --addr 优先于清单恢复值
-        let t3 = spawn_mgr_opt(Some(path.clone()), None, "127.0.0.1:0".parse().unwrap(), true).await;
+        let t3 = spawn_mgr_opt(
+            Some(path.clone()),
+            None,
+            "127.0.0.1:0".parse().unwrap(),
+            true,
+        )
+        .await;
         assert_ne!(
             t3.addr, new_addr,
             "显式 --addr (:0 → 随机) 应优先于 [manager] 恢复值"
@@ -3132,7 +3361,10 @@ mod tests {
         // 静态服务: 命中内置 (200 + :root 令牌)
         let (code, body) = http_req(t.addr, "GET", "/themes/dark.css", None).await;
         assert_eq!(code, 200);
-        assert!(body.contains(":root") && body.contains("--bg:#14171a"), "{body}");
+        assert!(
+            body.contains(":root") && body.contains("--bg:#14171a"),
+            "{body}"
+        );
         // 静态服务: win95 (直角 + 海军蓝定版值)
         let (code, body) = http_req(t.addr, "GET", "/themes/win95.css", None).await;
         assert_eq!(code, 200, "win95.css 应可服务");

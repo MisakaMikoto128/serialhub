@@ -1,0 +1,11 @@
+C:\Users\liuyu\Desktop\WorkPlace\serialhub\target-qa\release\deps\serde_path_to_error-a9bee1ee0aad9e67.d: C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\serde_path_to_error-0.1.20\src\lib.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\serde_path_to_error-0.1.20\src\de.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\serde_path_to_error-0.1.20\src\path.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\serde_path_to_error-0.1.20\src\ser.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\serde_path_to_error-0.1.20\src\wrap.rs
+
+C:\Users\liuyu\Desktop\WorkPlace\serialhub\target-qa\release\deps\libserde_path_to_error-a9bee1ee0aad9e67.rlib: C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\serde_path_to_error-0.1.20\src\lib.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\serde_path_to_error-0.1.20\src\de.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\serde_path_to_error-0.1.20\src\path.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\serde_path_to_error-0.1.20\src\ser.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\serde_path_to_error-0.1.20\src\wrap.rs
+
+C:\Users\liuyu\Desktop\WorkPlace\serialhub\target-qa\release\deps\libserde_path_to_error-a9bee1ee0aad9e67.rmeta: C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\serde_path_to_error-0.1.20\src\lib.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\serde_path_to_error-0.1.20\src\de.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\serde_path_to_error-0.1.20\src\path.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\serde_path_to_error-0.1.20\src\ser.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\serde_path_to_error-0.1.20\src\wrap.rs
+
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\serde_path_to_error-0.1.20\src\lib.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\serde_path_to_error-0.1.20\src\de.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\serde_path_to_error-0.1.20\src\path.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\serde_path_to_error-0.1.20\src\ser.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\serde_path_to_error-0.1.20\src\wrap.rs:

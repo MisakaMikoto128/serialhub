@@ -44,7 +44,11 @@ impl RateWindow {
         if let Some(cut) = now.checked_sub(WINDOW) {
             // front 是当前基线锚点; 若第二条样本也过期, front 可安全丢弃
             while self.samples.len() > 2
-                && self.samples.get(1).map(|(t, _, _)| *t <= cut).unwrap_or(false)
+                && self
+                    .samples
+                    .get(1)
+                    .map(|(t, _, _)| *t <= cut)
+                    .unwrap_or(false)
             {
                 self.samples.pop_front();
             }

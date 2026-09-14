@@ -68,11 +68,7 @@ pub fn scan(dir: &Path) -> Vec<ThemeEntry> {
         .flatten()
         .filter(|e| e.path().is_file())
         .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|f| {
-            f.len() <= MAX_NAME
-                && f.ends_with(".css")
-                && valid_name_chars(f)
-        })
+        .filter(|f| f.len() <= MAX_NAME && f.ends_with(".css") && valid_name_chars(f))
         .map(|f| f[..f.len() - 4].to_string())
         .collect();
     names.sort();
@@ -97,11 +93,9 @@ fn valid_name_chars(file: &str) -> bool {
 pub fn serve(dir: &Path, file: &str) -> Response {
     match resolve(dir, file) {
         Some(path) => match std::fs::read(&path) {
-            Ok(bytes) => (
-                [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
-                bytes,
-            )
-                .into_response(),
+            Ok(bytes) => {
+                ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], bytes).into_response()
+            }
             Err(_) => not_found(),
         },
         None => not_found(),
@@ -144,11 +138,7 @@ mod tests {
     use super::*;
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!(
-            "sh_themes_{}_{}",
-            std::process::id(),
-            tag
-        ));
+        let d = std::env::temp_dir().join(format!("sh_themes_{}_{}", std::process::id(), tag));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -173,7 +163,7 @@ mod tests {
     #[test]
     fn win95_theme_pins_retro_tokens() {
         let css = BUILTIN[3].1; // win95 (Sprint 10, 用户点名: 直角 + Win95 复古)
-        // 直角是本主题灵魂
+                                // 直角是本主题灵魂
         assert!(css.contains("--radius:0"));
         assert!(css.contains("--ctl-radius:0"));
         // 经典 Win95 配色定版值
@@ -185,7 +175,11 @@ mod tests {
         assert!(css.contains("--accent-ink:#ffffff"));
         assert!(css.contains("--ink:#000000"));
         // 徽章底一律回银 + 深色 ink
-        for ink in ["--ok-ink:#004a00", "--warn-ink:#5c4400", "--err-ink:#7a1010"] {
+        for ink in [
+            "--ok-ink:#004a00",
+            "--warn-ink:#5c4400",
+            "--err-ink:#7a1010",
+        ] {
             assert!(css.contains(ink), "{ink}");
         }
         // 四种徽章底一律回银
@@ -203,6 +197,20 @@ mod tests {
         // 文件头注释: 致敬语 + 对比度自检
         assert!(css.contains("配色致敬 Windows 95 与 98.css 项目"));
         assert!(css.contains("对比度自检"));
+    }
+
+    #[test]
+    fn win95_footer_on_teal_pins_aa_contrast() {
+        // QA-sprint10 §5.2 提出 / ADR-22③ 定版: footer 与 .toolbar .count 是
+        // 仅有的两处直接躺桌面青 (#008080) 的弱化文字, 必须保持纯白 ——
+        // 白对青实测 4.77:1 ≥ 4.5 (AA), 且是不改青底前提下的理论上限;
+        // 改回 --muted/--faint 会跌到 2.17:1/1.32:1, 在此钉死规则与实测数字。
+        let css = BUILTIN[3].1; // win95
+        assert!(
+            css.contains("footer,.toolbar .count{color:#fff}"),
+            "青底文字必须钉死纯白规则"
+        );
+        assert!(css.contains("4.77"), "注释须保留实测对比度数字 (4.77:1)");
     }
 
     #[test]
@@ -240,7 +248,10 @@ mod tests {
         // 幂等: 用户改动不被覆盖 (插件语义 = 文件为准)
         std::fs::write(&p, "/* user tuned win95 */").unwrap();
         ensure_builtin(&d).unwrap();
-        assert_eq!(std::fs::read_to_string(&p).unwrap(), "/* user tuned win95 */");
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            "/* user tuned win95 */"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 

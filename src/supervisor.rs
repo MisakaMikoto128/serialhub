@@ -199,12 +199,24 @@ mod tests {
 
     impl FakeOpener {
         fn new(fail: bool, stuck_ms: u64, die: bool) -> Self {
-            Self { fail, fail_times: 0, stuck_ms, die, calls: AtomicUsize::new(0) }
+            Self {
+                fail,
+                fail_times: 0,
+                stuck_ms,
+                die,
+                calls: AtomicUsize::new(0),
+            }
         }
 
         /// 前 fail_times 次打开失败, 之后成功且会话存活 (连败 n 次后恢复)。
         fn fail_first(fail_times: usize) -> Self {
-            Self { fail: false, fail_times, stuck_ms: 0, die: false, calls: AtomicUsize::new(0) }
+            Self {
+                fail: false,
+                fail_times,
+                stuck_ms: 0,
+                die: false,
+                calls: AtomicUsize::new(0),
+            }
         }
     }
 
@@ -240,7 +252,10 @@ mod tests {
                     });
                 }
             }
-            Ok(PortSession { stop, events: ev_rx })
+            Ok(PortSession {
+                stop,
+                events: ev_rx,
+            })
         }
     }
 
@@ -403,7 +418,11 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         assert_eq!(hub.retries(), 3, "连败恰 3 次, 计数应为 3");
-        assert_eq!(hub.status_json().retries, 3, "/api/status 投影须回显同一计数");
+        assert_eq!(
+            hub.status_json().retries,
+            3,
+            "/api/status 投影须回显同一计数"
+        );
         assert_eq!(hub.phase(), Phase::Retry);
         // 第 4 次尝试成功打开 → 归 0
         assert!(wait_phase(&hub, Phase::Open, Duration::from_secs(3)).await);
@@ -426,7 +445,11 @@ mod tests {
         ));
         cmd_tx.send(HubCmd::Open).unwrap();
         assert!(wait_phase(&hub, Phase::Retry, Duration::from_secs(2)).await);
-        assert_eq!(hub.retries(), 1, "打开失败 1 次 → 计数 1 (5s 内不会有第 2 次尝试)");
+        assert_eq!(
+            hub.retries(),
+            1,
+            "打开失败 1 次 → 计数 1 (5s 内不会有第 2 次尝试)"
+        );
         cmd_tx.send(HubCmd::Close).unwrap();
         assert!(wait_phase(&hub, Phase::Closed, Duration::from_millis(500)).await);
         assert_eq!(hub.retries(), 0, "用户手动 close 归 0");
@@ -455,11 +478,18 @@ mod tests {
         }
         // 直接 Closed (真实失败原因留痕 + 注明后缀, 修复轮 D1), 绝不出现 Retry 相位
         assert!(wait_phase(&hub, Phase::Closed, Duration::from_secs(2)).await);
-        assert_eq!(opener.calls.load(Ordering::Relaxed), 1, "失败即停, 只试一次");
+        assert_eq!(
+            opener.calls.load(Ordering::Relaxed),
+            1,
+            "失败即停, 只试一次"
+        );
         assert_eq!(hub.phase(), Phase::Closed);
         let le = hub.status_json().last_error.unwrap_or_default();
         assert!(le.contains("模拟"), "真实原因须留痕: {le}");
-        assert!(le.ends_with("(自动重连已关闭)"), "打开失败也须注明关闭 (D1): {le}");
+        assert!(
+            le.ends_with("(自动重连已关闭)"),
+            "打开失败也须注明关闭 (D1): {le}"
+        );
         // 稳定窗口: 不应自行重试
         tokio::time::sleep(Duration::from_millis(60)).await;
         assert_eq!(opener.calls.load(Ordering::Relaxed), 1, "不得自动重试");
@@ -471,7 +501,11 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         assert!(wait_phase(&hub, Phase::Closed, Duration::from_secs(2)).await);
-        assert_eq!(opener.calls.load(Ordering::Relaxed), 2, "手动 open 单次尝试");
+        assert_eq!(
+            opener.calls.load(Ordering::Relaxed),
+            2,
+            "手动 open 单次尝试"
+        );
         tokio::time::sleep(Duration::from_millis(60)).await;
         assert_eq!(opener.calls.load(Ordering::Relaxed), 2, "失败后仍不循环");
     }
@@ -501,7 +535,11 @@ mod tests {
             .contains("自动重连已关闭"));
         assert_eq!(opener.calls.load(Ordering::Relaxed), 1);
         tokio::time::sleep(Duration::from_millis(80)).await;
-        assert_eq!(opener.calls.load(Ordering::Relaxed), 1, "掉线后不得自动重试");
+        assert_eq!(
+            opener.calls.load(Ordering::Relaxed),
+            1,
+            "掉线后不得自动重试"
+        );
         // 手动 open = 单次尝试, 成功照常 Open
         cmd_tx.send(HubCmd::Open).unwrap();
         assert!(wait_phase(&hub, Phase::Open, Duration::from_secs(2)).await);
@@ -533,7 +571,11 @@ mod tests {
         );
         let calls = opener.calls.load(Ordering::Relaxed);
         tokio::time::sleep(Duration::from_millis(100)).await;
-        assert_eq!(opener.calls.load(Ordering::Relaxed), calls, "翻转后不得再尝试");
+        assert_eq!(
+            opener.calls.load(Ordering::Relaxed),
+            calls,
+            "翻转后不得再尝试"
+        );
     }
 
     /// FR-12: autoReconnect=true 维持现状 —— 掉线仍进重试循环 (防回归锚点)。

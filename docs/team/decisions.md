@@ -185,3 +185,14 @@ service.rs serve 循环化: rebind 槽 (每轮新建) 触发 serve 任务第二�
    处理未分键 (右键也走了"恢复主窗口")。修为仅左键恢复; 右键专属菜单, 互不干扰。
 ④ 文档查缺补漏: v1.3~v1.5 新增能力 (主题/图标/单实例/端口预填/无控制台/双路径/
    打开面板) 逐项核对手册与 README, 只补缺失、删重复, 不许啰嗦。
+
+## ADR-22 Sprint 11 批次 A (2026-09-14, 架构师; 用户批准)
+
+① A1 窗口记忆: fleet.json 增 "window" 段 {x,y,w,h,maximized} —— GUI 退出时写入,
+   启动时恢复并夹紧到可见屏幕内 (多显示器/拔显示器防丢); headless 不写。
+   归属 fleet.json 理由: 它已是本机状态的单一事实来源, 不再开第二个配置文件。
+② A2 建桥表单参数记忆: localStorage "sh_lastbridge" {port,baud,dataBits,parity,
+   stopBits,flow} —— 串口只回填扫描列表里仍存在的; 属浏览器侧用户习惯, 不进 fleet。
+③ A3 win95 页脚对比度: 调 win95.css 令牌至 ≥4.5:1, 不动其他主题。
+④ A4 fmt/clippy 清偿 + ci.yml 加 fmt --check 与 clippy -D warnings 门禁 (先清后堵)。
+⑤ A5 托盘目视确认: 属用户 30 秒人工项, 随发版清单提示, 非开发任务。

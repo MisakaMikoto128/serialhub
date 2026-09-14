@@ -98,7 +98,12 @@ impl Default for SerialConfig {
 impl SerialConfig {
     /// "8N2" 形式的紧凑串 (与 CLI --config / 状态接口 config 字段同构)。
     pub fn config_str(&self) -> String {
-        format!("{}{}{}", self.data_bits, self.parity.as_char(), self.stop_bits)
+        format!(
+            "{}{}{}",
+            self.data_bits,
+            self.parity.as_char(),
+            self.stop_bits
+        )
     }
 
     /// 打开串口前的完整校验。port 允许为空 (是否为空由调用方决定语义)。
@@ -118,9 +123,7 @@ pub fn validate_baud(b: u32) -> Result<(), String> {
     if (BAUD_MIN..=BAUD_MAX).contains(&b) {
         Ok(())
     } else {
-        Err(format!(
-            "波特率 {b} 超出允许范围 [{BAUD_MIN}, {BAUD_MAX}]"
-        ))
+        Err(format!("波特率 {b} 超出允许范围 [{BAUD_MIN}, {BAUD_MAX}]"))
     }
 }
 
@@ -169,7 +172,9 @@ mod tests {
 
     #[test]
     fn parse_config_str_rejects_garbage() {
-        for bad in ["", "8N", "8N21", "9N2", "8X2", "8N3", "8 E 1", "82", "8,n,2"] {
+        for bad in [
+            "", "8N", "8N21", "9N2", "8X2", "8N3", "8 E 1", "82", "8,n,2",
+        ] {
             assert!(parse_config_str(bad).is_err(), "应拒绝 {bad:?}");
         }
         // 错误信息要能定位到是哪一位非法

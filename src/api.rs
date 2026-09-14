@@ -15,14 +15,14 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::http::{header, StatusCode};
-use std::net::SocketAddr;
-use std::sync::Arc;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
+use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -179,7 +179,10 @@ pub(crate) fn apply_config_core(ctx: &PortCtx, req: ConfigReq) -> Response {
     ok()
 }
 
-async fn set_config(State(app): State<App>, body: Result<Json<ConfigReq>, JsonRejection>) -> Response {
+async fn set_config(
+    State(app): State<App>,
+    body: Result<Json<ConfigReq>, JsonRejection>,
+) -> Response {
     match body {
         Ok(Json(req)) => apply_config_core(&app.ctx, req),
         Err(rej) => bad(format!("请求体不是合法 JSON: {rej}")),
@@ -237,7 +240,10 @@ pub(crate) fn restart_core(
     ok()
 }
 
-async fn restart(State(app): State<App>, body: Result<Json<RestartReq>, JsonRejection>) -> Response {
+async fn restart(
+    State(app): State<App>,
+    body: Result<Json<RestartReq>, JsonRejection>,
+) -> Response {
     restart_core(&app.restart_to, body)
 }
 
@@ -259,7 +265,11 @@ pub(crate) fn ok() -> Response {
 }
 
 pub(crate) fn bad(msg: String) -> Response {
-    (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": msg}))).into_response()
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({"ok": false, "error": msg})),
+    )
+        .into_response()
 }
 
 // ---------- 数据面 /ws (纯二进制) ----------
@@ -276,11 +286,12 @@ pub(crate) async fn client_loop(mut socket: WebSocket, app: App) {
     // 且不计入 clients (未 client_inc); 老客户端不受影响。
     let max = app.ctx.hub.max_clients();
     if max > 0 && app.ctx.hub.client_count() >= max as usize {
-        let _ = socket.send(Message::Close(Some(CloseFrame {
-            code: 1013,
-            reason: "max clients".into(),
-        })))
-        .await;
+        let _ = socket
+            .send(Message::Close(Some(CloseFrame {
+                code: 1013,
+                reason: "max clients".into(),
+            })))
+            .await;
         return;
     }
     app.ctx.hub.client_inc();

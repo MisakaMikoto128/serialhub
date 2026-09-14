@@ -24,7 +24,10 @@ fn main() {
     // 1) exe 图标: winres 仅对 Windows 目标执行 (非 Windows 目标不引用 winres 逻辑)
     let ico = Path::new("assets/app.ico");
     if target_os == "windows" && ico.exists() {
-        if let Err(e) = winres::WindowsResource::new().set_icon("assets/app.ico").compile() {
+        if let Err(e) = winres::WindowsResource::new()
+            .set_icon("assets/app.ico")
+            .compile()
+        {
             println!("cargo:warning=SerialHub: app.ico 嵌入失败 (忽略, exe 无自定义图标): {e}");
         }
     }
@@ -68,7 +71,7 @@ fn main() {
 /// 窗口图标: app.ico 内最大 PNG 条目优先, 回退 png/serialhub-64.png (契约见 README)。
 fn decode_window_icon() -> Option<(Vec<u8>, u32, u32)> {
     let bytes = fs::read("assets/app.ico").ok()?;
-    match largest_png_from_ico(&bytes).and_then(|png| decode_png_bytes(png)) {
+    match largest_png_from_ico(&bytes).and_then(decode_png_bytes) {
         Some(v) => Some(v),
         None => decode_png(Path::new("assets/png/serialhub-64.png")),
     }
@@ -87,7 +90,11 @@ fn largest_png_from_ico(bytes: &[u8]) -> Option<&[u8]> {
             return None;
         }
         let w = if bytes[e] == 0 { 256 } else { bytes[e] as u32 };
-        let h = if bytes[e + 1] == 0 { 256 } else { bytes[e + 1] as u32 };
+        let h = if bytes[e + 1] == 0 {
+            256
+        } else {
+            bytes[e + 1] as u32
+        };
         let len = u32::from_le_bytes(bytes[e + 8..e + 12].try_into().ok()?) as usize;
         let off = u32::from_le_bytes(bytes[e + 12..e + 16].try_into().ok()?) as usize;
         if off + len > bytes.len() {
@@ -96,7 +103,7 @@ fn largest_png_from_ico(bytes: &[u8]) -> Option<&[u8]> {
         if bytes[off..off + 4] != [0x89, b'P', b'N', b'G'] {
             continue; // BMP 条目不支持
         }
-        if best.map_or(true, |(a, _, _)| w * h > a) {
+        if best.is_none_or(|(a, _, _)| w * h > a) {
             best = Some((w * h, off, len));
         }
     }

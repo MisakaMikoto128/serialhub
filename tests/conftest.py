@@ -36,7 +36,10 @@ import serial
 import websockets
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-BRIDGE_EXE = PROJECT_ROOT / "target" / "release" / "serialhub.exe"
+# SERIALHUB_EXE 可覆盖被测 release 二进制路径 (Sprint 11 QA 修订: 默认 target/release
+# 被并行席位实例锁死无法重链接时, 用 CARGO_TARGET_DIR 旁路构建后指过来; 不设则行为不变)。
+BRIDGE_EXE = Path(os.environ.get("SERIALHUB_EXE") or
+                  PROJECT_ROOT / "target" / "release" / "serialhub.exe")
 BRIDGE_COM = "COM1"  # 桥侧 (硬约束: 测试只许用 COM1/COM2)
 PEER_COM = "COM2"    # pyserial 对端
 HTTP_HOST = "127.0.0.1"
@@ -61,10 +64,48 @@ def status_fields_expected(sample: dict) -> set:
 
 # ------------------------------------------------------------------ 基础工具
 
+# Sprint 11 (ADR-22 批次 A, QA 修订): kill_all_bridges 由 /IM 全杀改为"会话前快照
+# 差集按 PID 清理" —— 并行席位/用户手开的 serialhub.exe (外来实例) 不再被误杀;
+# 本会话自身拉起的实例仍全部清光, "不得残留占 COM1"的纪律不变。
+_FOREIGN_PIDS: set[int] = set()
+FOREIGN_PIDS = _FOREIGN_PIDS  # 导出: 用例做"本会话实例"断言时用差集 (Sprint 11)
+
+
+def snapshot_foreign_bridges() -> None:
+    """会话开始时快照已存在的 serialhub.exe PID (外来实例: 并行席位/用户实例)。
+    之后 kill_all_bridges 只清快照之外的本会话实例。"""
+    out = subprocess.run(
+        ["tasklist", "/FI", "IMAGENAME eq serialhub.exe", "/FO", "CSV", "/NH"],
+        capture_output=True, text=True, check=False).stdout
+    for line in out.splitlines():
+        parts = [p.strip('"') for p in line.split('","')]
+        if len(parts) >= 2 and parts[0].lower() == "serialhub.exe":
+            try:
+                _FOREIGN_PIDS.add(int(parts[1]))
+            except ValueError:
+                pass
+
+
+def _current_serialhub_pids() -> set[int]:
+    out = subprocess.run(
+        ["tasklist", "/FI", "IMAGENAME eq serialhub.exe", "/FO", "CSV", "/NH"],
+        capture_output=True, text=True, check=False).stdout
+    pids: set[int] = set()
+    for line in out.splitlines():
+        parts = [p.strip('"') for p in line.split('","')]
+        if len(parts) >= 2 and parts[0].lower() == "serialhub.exe":
+            try:
+                pids.add(int(parts[1]))
+            except ValueError:
+                pass
+    return pids
+
+
 def kill_all_bridges() -> None:
-    """兜底清理: 强杀本机所有 serialhub.exe (仅本项目被测二进制, 防残留占 COM1)。"""
-    subprocess.run(["taskkill", "/F", "/IM", "serialhub.exe", "/T"],
-                   capture_output=True, check=False)
+    """兜底清理: 按 PID 强杀本会话的 serialhub.exe 实例 (外来快照户不碰)。"""
+    for pid in _current_serialhub_pids() - _FOREIGN_PIDS:
+        subprocess.run(["taskkill", "/F", "/PID", str(pid), "/T"],
+                       capture_output=True, check=False)
 
 
 def free_tcp_port() -> int:
@@ -234,7 +275,8 @@ def sanitize_global_fleet() -> None:
 def _session_hygiene():
     assert BRIDGE_EXE.exists(), (
         f"未找到 {BRIDGE_EXE} —— 请先在项目根执行 cargo build --release")
-    kill_all_bridges()   # 清理上次运行可能残留的桥进程
+    snapshot_foreign_bridges()
+    kill_all_bridges()   # 清理上次运行可能残留的桥进程 (外来快照户除外)
     sanitize_global_fleet()
     yield
     kill_all_bridges()   # 会话结束兜底: 不得残留占 COM1 的进程

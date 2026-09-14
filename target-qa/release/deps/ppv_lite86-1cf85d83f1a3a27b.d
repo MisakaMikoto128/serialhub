@@ -1,0 +1,11 @@
+C:\Users\liuyu\Desktop\WorkPlace\serialhub\target-qa\release\deps\ppv_lite86-1cf85d83f1a3a27b.d: C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\ppv-lite86-0.2.21\src\lib.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\ppv-lite86-0.2.21\src\soft.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\ppv-lite86-0.2.21\src\types.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\ppv-lite86-0.2.21\src\x86_64\mod.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\ppv-lite86-0.2.21\src\x86_64\sse2.rs
+
+C:\Users\liuyu\Desktop\WorkPlace\serialhub\target-qa\release\deps\libppv_lite86-1cf85d83f1a3a27b.rlib: C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\ppv-lite86-0.2.21\src\lib.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\ppv-lite86-0.2.21\src\soft.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\ppv-lite86-0.2.21\src\types.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\ppv-lite86-0.2.21\src\x86_64\mod.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\ppv-lite86-0.2.21\src\x86_64\sse2.rs
+
+C:\Users\liuyu\Desktop\WorkPlace\serialhub\target-qa\release\deps\libppv_lite86-1cf85d83f1a3a27b.rmeta: C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\ppv-lite86-0.2.21\src\lib.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\ppv-lite86-0.2.21\src\soft.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\ppv-lite86-0.2.21\src\types.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\ppv-lite86-0.2.21\src\x86_64\mod.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\ppv-lite86-0.2.21\src\x86_64\sse2.rs
+
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\ppv-lite86-0.2.21\src\lib.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\ppv-lite86-0.2.21\src\soft.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\ppv-lite86-0.2.21\src\types.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\ppv-lite86-0.2.21\src\x86_64\mod.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\ppv-lite86-0.2.21\src\x86_64\sse2.rs:

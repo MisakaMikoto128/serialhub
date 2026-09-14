@@ -148,7 +148,10 @@ impl PortOpener for RealOpener {
         }
 
         ctx.set_active_stop(stop.clone()); // 供干净退出路径 (FR-8) 置位
-        Ok(PortSession { stop, events: ev_rx })
+        Ok(PortSession {
+            stop,
+            events: ev_rx,
+        })
     }
 }
 

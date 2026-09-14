@@ -167,6 +167,9 @@ impl HubState {
         g.retries = g.retries.saturating_add(1);
     }
 
+    /// 直接读数目前仅监督测试断言用 (生产侧读 /api/status 投影 status_json.retries,
+    /// 与本 getter 同源); 随测试编译 —— bin 构建不编入, 免 dead_code 告警。
+    #[cfg(test)]
     pub fn retries(&self) -> u32 {
         r(&self.inner).retries
     }
@@ -246,9 +249,13 @@ mod tests {
     use std::collections::HashSet;
 
     fn hub_with_com1() -> HubState {
-        let mut cfg = SerialConfig::default();
-        cfg.port = "COM1".into();
-        HubState::new(cfg, 0)
+        HubState::new(
+            SerialConfig {
+                port: "COM1".into(),
+                ..SerialConfig::default()
+            },
+            0,
+        )
     }
 
     #[test]
@@ -297,12 +304,12 @@ mod tests {
     fn auto_reconnect_echo_and_roundtrip() {
         let hub = hub_with_com1();
         assert!(hub.auto_reconnect(), "默认 true");
-        assert_eq!(hub.status_json().auto_reconnect, true);
+        assert!(hub.status_json().auto_reconnect);
         hub.set_auto_reconnect(false);
         assert!(!hub.auto_reconnect());
-        assert_eq!(hub.status_json().auto_reconnect, false);
+        assert!(!hub.status_json().auto_reconnect);
         hub.set_auto_reconnect(true);
-        assert_eq!(hub.status_json().auto_reconnect, true);
+        assert!(hub.status_json().auto_reconnect);
     }
 
     #[test]
@@ -395,12 +402,14 @@ mod tests {
     #[test]
     fn config_update_reflected_in_status() {
         let hub = hub_with_com1();
-        let mut cfg = SerialConfig::default();
-        cfg.port = "COM2".into();
-        cfg.baud = 921_600;
-        cfg.data_bits = 7;
-        cfg.parity = Parity::E;
-        cfg.stop_bits = 1;
+        let cfg = SerialConfig {
+            port: "COM2".into(),
+            baud: 921_600,
+            data_bits: 7,
+            parity: Parity::E,
+            stop_bits: 1,
+            ..SerialConfig::default()
+        };
         hub.update_config(cfg);
         let s = hub.status_json();
         assert_eq!(s.port, "COM2");

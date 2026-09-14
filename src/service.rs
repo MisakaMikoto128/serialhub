@@ -102,13 +102,20 @@ pub async fn run_service(
     };
 
     // 实际监听地址 (su.addr 端口可为 0, 由系统分配 —— GUI/测试都以 Ready 上报的为准)
-    let addr = listener.local_addr().map_err(|e| format!("获取监听地址失败: {e}"))?;
+    let addr = listener
+        .local_addr()
+        .map_err(|e| format!("获取监听地址失败: {e}"))?;
     if let Some(cb) = &on_event {
         cb(ServiceEvent::Ready(addr));
     }
     println!("SerialHub 就绪: http://{addr}  (关闭窗口 = 退到托盘)");
     if !hub.config().port.is_empty() {
-        println!("  串口: {} @ {} (自动打开: {})", hub.config().port, hub.config().config_str(), su.auto_open);
+        println!(
+            "  串口: {} @ {} (自动打开: {})",
+            hub.config().port,
+            hub.config().config_str(),
+            su.auto_open
+        );
     }
 
     // 2) 监督任务 + 自动打开
@@ -227,16 +234,20 @@ pub async fn run_service(
                         Err(e) => {
                             if tokio::time::Instant::now() >= deadline {
                                 eprintln!("serialhub: 换址失败 ({new_addr}): {e} —— 保持原地址 {cur_addr} 继续服务");
-                                break TcpListener::bind(cur_addr).await.map_err(|e| {
-                                    format!("换址失败且原地址也绑定失败: {e}")
-                                })?;
+                                break TcpListener::bind(cur_addr)
+                                    .await
+                                    .map_err(|e| format!("换址失败且原地址也绑定失败: {e}"))?;
                             }
                             tokio::time::sleep(Duration::from_millis(250)).await;
                         }
                     }
                 };
-                let bound_addr = bound.local_addr().map_err(|e| format!("获取监听地址失败: {e}"))?;
-                println!("serialhub: 监听地址已切换 {cur_addr} -> {bound_addr} (串口会话与状态未中断)");
+                let bound_addr = bound
+                    .local_addr()
+                    .map_err(|e| format!("获取监听地址失败: {e}"))?;
+                println!(
+                    "serialhub: 监听地址已切换 {cur_addr} -> {bound_addr} (串口会话与状态未中断)"
+                );
                 cur_addr = bound_addr;
                 listener = bound;
                 continue; // 回到循环顶部, 用新 listener 重开 serve
@@ -246,7 +257,16 @@ pub async fn run_service(
             Err(e) => return Err(format!("HTTP 服务任务异常: {e}")),
         }
     }
-    finalize_shutdown(cmd_tx, ctx, done_handle, on_event, SHUTDOWN_GRACE, true, rebind_to).await
+    finalize_shutdown(
+        cmd_tx,
+        ctx,
+        done_handle,
+        on_event,
+        SHUTDOWN_GRACE,
+        true,
+        rebind_to,
+    )
+    .await
 }
 
 /// 停机宽限 (qa-sprint2-fix): watch 触发后 250ms 保证串口线程退出 (COM 释放优先),
@@ -332,8 +352,7 @@ fn respawn_args(new_addr: &str, cfg: &SerialConfig, max_clients: u32) -> Vec<Str
 
 #[cfg_attr(not(test), allow(dead_code))]
 fn spawn_respawn(new_addr: &str, cfg: &SerialConfig, max_clients: u32) -> Result<(), String> {
-    let exe = std::env::current_exe()
-        .map_err(|e| format!("定位当前可执行文件失败: {e}"))?;
+    let exe = std::env::current_exe().map_err(|e| format!("定位当前可执行文件失败: {e}"))?;
     let args = respawn_args(new_addr, cfg, max_clients);
     #[cfg(windows)]
     {
@@ -444,7 +463,7 @@ mod tests {
         tx.send(true).unwrap();
         assert!(rx.changed().await.is_ok());
         tx.send(false).unwrap(); // 重复发送不 panic (幂等开关语义)
-        assert_eq!(*rx.borrow(), false);
+        assert!(!*rx.borrow());
     }
 
     /// 手工 WS 握手 (HTTP/1.1 Upgrade), 返回升级后的 TcpStream。
@@ -497,8 +516,8 @@ mod tests {
             .expect("服务 5s 内未就绪")
             .expect("Ready 事件缺失");
 
-        // 第 1 条 WS: 正常接受
-        let mut ws1 = ws_handshake(addr).await;
+        // 第 1 条 WS: 正常接受 (只需占位持有连接, 不读写)
+        let ws1 = ws_handshake(addr).await;
 
         // 第 2 条 WS: 握手成功后收到 close 1013 "max clients"
         // (101 响应头与 close 帧可能合并或分片到达, 循环读取直到帧完整)
@@ -546,15 +565,16 @@ mod tests {
 
         // status: clients 恰 1 (拒连不计入) 且 maxClients=1
         let mut http = TcpStream::connect(addr).await.unwrap();
-        let req = format!(
-            "GET /api/status HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
-        );
+        let req = format!("GET /api/status HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
         http.write_all(req.as_bytes()).await.unwrap();
         let mut resp = Vec::new();
         http.read_to_end(&mut resp).await.unwrap();
         let body = String::from_utf8_lossy(&resp);
         assert!(body.contains("\"clients\":1"), "clients 应为 1: {body}");
-        assert!(body.contains("\"maxClients\":1"), "maxClients 应为 1: {body}");
+        assert!(
+            body.contains("\"maxClients\":1"),
+            "maxClients 应为 1: {body}"
+        );
 
         shutdown_tx.send(true).unwrap();
         tokio::time::timeout(Duration::from_secs(3), srv)
@@ -611,7 +631,10 @@ mod tests {
         let mut resp = Vec::new();
         http.read_to_end(&mut resp).await.unwrap();
         let body = String::from_utf8_lossy(&resp);
-        assert!(body.contains("200"), "ADR-12: headless 换址应受理 (200): {body}");
+        assert!(
+            body.contains("200"),
+            "ADR-12: headless 换址应受理 (200): {body}"
+        );
         assert!(body.contains("\"ok\":true"), "响应体应 ok: {body}");
 
         // 守卫在停机之前: 服务不应因 restart 请求退出 (&mut 借用, srv 稍后仍需 join)
@@ -629,10 +652,12 @@ mod tests {
     /// ADR-10: 自我重启参数组必须携带当前 flow (--flow), 重启后不再回 none。
     #[test]
     fn respawn_args_carry_flow() {
-        let mut cfg = SerialConfig::default();
-        cfg.port = "COM2".into();
-        cfg.baud = 921_600;
-        cfg.flow = Flow::RtsCts;
+        let mut cfg = SerialConfig {
+            port: "COM2".into(),
+            baud: 921_600,
+            flow: Flow::RtsCts,
+            ..SerialConfig::default()
+        };
         let args = respawn_args("127.0.0.1:9000", &cfg, 4);
         let joined = args.join(" ");
         for expect in [
@@ -676,7 +701,11 @@ mod tests {
         });
         // 永不完成的 serve —— 模拟外部进程挂连接拖死优雅停机
         let never: tokio::task::JoinHandle<Result<Option<()>, std::io::Error>> =
-            tokio::spawn(async { std::future::pending::<Result<(), std::io::Error>>().await.map(|_| None) });
+            tokio::spawn(async {
+                std::future::pending::<Result<(), std::io::Error>>()
+                    .await
+                    .map(|_| None)
+            });
 
         let restart_to: Arc<std::sync::Mutex<Option<String>>> =
             Arc::new(std::sync::Mutex::new(None));
@@ -707,21 +736,19 @@ mod tests {
     /// watch 触发路径端到端: send(true) → run_service 完成 → Stopped 事件 + Close 指令。
     #[tokio::test(flavor = "multi_thread")]
     async fn shutdown_watch_triggers_graceful_sequence() {
-        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<HubCmd>();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<HubCmd>();
         let (shutdown_tx, _) = watch::channel(false);
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<SocketAddr>();
         let ready_tx = Arc::new(std::sync::Mutex::new(Some(ready_tx)));
         let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<ServiceEvent>();
-        let on_event: OnEvent = Arc::new(move |ev: ServiceEvent| {
-            match ev {
-                ServiceEvent::Ready(a) => {
-                    if let Some(tx) = ready_tx.lock().unwrap().take() {
-                        let _ = tx.send(a);
-                    }
+        let on_event: OnEvent = Arc::new(move |ev: ServiceEvent| match ev {
+            ServiceEvent::Ready(a) => {
+                if let Some(tx) = ready_tx.lock().unwrap().take() {
+                    let _ = tx.send(a);
                 }
-                other => {
-                    let _ = ev_tx.send(other);
-                }
+            }
+            other => {
+                let _ = ev_tx.send(other);
             }
         });
         let su = Startup {
