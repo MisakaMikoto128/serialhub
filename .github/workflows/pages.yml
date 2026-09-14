@@ -1,0 +1,39 @@
+# SerialHub 官网发布 —— website/ 目录直发 GitHub Pages (纯静态零构建, WEB-6)。
+# Pages 已由架构师开通 build_type=workflow (gh api), 本 workflow 是唯一发布入口:
+# 推 main 且 website/ 有改动时自动发布, 也可在 Actions 页手动触发。
+# 回滚 = 重跑目标旧 commit 的本 workflow (Actions 页 run-re-run)。
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths: ['website/**', '.github/workflows/pages.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy (static, no build)
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: website
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

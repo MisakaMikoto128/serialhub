@@ -77,7 +77,7 @@
 | 705 | 用户体验组 | 新手视角下载路径走查 | reports/web-ux.md | 波W2 |
 | 707 | 功能测试组 | 链接矩阵/内容核对/多分辨率截图/HTML 校验 | reports/web-qa.md | 波W2 |
 | 708 | 部署测试组 | 双托管发布/国内外可达性实测/回滚说明 | reports/web-deploy.md | 波W2 |
-| 709 | 发布工程组 | SHA256 核算/国内网盘直链/版本数据回填站点 | reports/web-release.md | 波W2 |
+| 709 | 发布工程组 | SHA256 核算/国内直链 (Cloudflare 直挂, 候补蓝奏云)/版本数据回填 | reports/web-release.md | 波W2 |
 | 710 | 安全与合规组 | 许可证展示/免责与安全提示/隐私声明核对 | reports/web-compliance.md | 波W2 |
 | 711 | SEO 与数据组 | 收录/关键词/下载来源统计 (WEB-7 延伸) | — | 候补 |
 

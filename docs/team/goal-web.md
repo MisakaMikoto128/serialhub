@@ -41,14 +41,15 @@
 
 ## 709 发布工程组
 
-- 自 release.yml 产物核算三平台 SHA256; 上传安装包至蓝奏云 (国内通道), 记录直链与平台规则;
-  回填站点数据块 (版本/日期/链接/SHA256)。产出 reports/web-release.md。
+- 自 release.yml 产物核算三平台 SHA256; 国内通道 = Cloudflare Pages/R2 镜像项目直挂安装包
+  (记录直链与平台规则; EdgeOne/蓝奏云候补); 回填站点数据块 (版本/日期/链接/SHA256)。
+  产出 reports/web-release.md。
 
 ## 710 安全与合规组
 
 - reports/web-compliance.md 清单: Apache-2.0 声明 + LICENSE/NOTICE 链接; 安全提示对齐
   SECURITY.md (v1.x 无 TLS, 勿暴露不可信网络); 隐私声明 (站点无 Cookie/无统计/无第三方脚本);
-  国内网盘标注"官方直传镜像"防钓鱼口径。
+  国内直链标注"官方直传镜像"防钓鱼口径。
 
 ## 705 用户体验组
 

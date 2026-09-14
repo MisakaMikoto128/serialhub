@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>SerialHub — 串口 ⇄ WebSocket 桥接管理器 | 免费开源的轻量串口服务器</title>
+<meta name="description" content="SerialHub 是免费开源的串口 WebSocket 桥接工具：把串口设备变成网页和脚本可直接读写的字节管道，多座桥同时运行，串口拔出自动重连。Windows / Linux / macOS 单文件免安装，下载解压即用。">
+<link rel="icon" type="image/svg+xml" href="./assets/favicon.svg">
+<link rel="alternate icon" type="image/png" href="./assets/icon.png">
+<meta property="og:type" content="website">
+<meta property="og:title" content="SerialHub — 串口 ⇄ WebSocket 桥接管理器 | 免费开源的轻量串口服务器">
+<meta property="og:description" content="SerialHub 是免费开源的串口 WebSocket 桥接工具：把串口设备变成网页和脚本可直接读写的字节管道，多座桥同时运行，串口拔出自动重连。Windows / Linux / macOS 单文件免安装，下载解压即用。">
+<meta property="og:url" content="https://misakamikoto128.github.io/serialhub/">
+<meta property="og:image" content="https://misakamikoto128.github.io/serialhub/assets/og-image.png">
+<!-- ═══════════════════════════════════════════════════════════════════
+     RELEASE-DATA (WEB-2 单一数据块, 709 发布工程组逐版只改此对象)
+     版本 / 日期 / 三平台包名·规格·SHA256·链接全部在此; 页面加载后由本对象渲染。
+     正文里的同名静态文本仅为无 JS / 搜索引擎回退, 渲染以本对象为准。
+     ═══════════════════════════════════════════════════════════════════ -->
+<script>
+const RELEASE = {
+  version: "v1.7.1",
+  date: "2026-09-14",
+  repo: "https://github.com/MisakaMikoto128/serialhub",
+  releases: "https://github.com/MisakaMikoto128/serialhub/releases",
+  changelog: "https://github.com/MisakaMikoto128/serialhub/blob/main/CHANGELOG.md",
+  platforms: {
+    windows: {
+      file: "serialhub-v1.7.1-windows-x86_64.zip",
+      spec: "Windows x86_64 · zip · 约 1.6 MB",
+      sha256: "788fec72613b57e0a7e8919e5a86b459eef23bbe84d71eb771ed270455d2dfe0",
+      url: "https://github.com/MisakaMikoto128/serialhub/releases/download/v1.7.1/serialhub-v1.7.1-windows-x86_64.zip"
+    },
+    linux: {
+      file: "serialhub-v1.7.1-linux-x86_64.tar.gz",
+      spec: "Linux x86_64 · tar.gz · 约 1.9 MB",
+      sha256: "b242b8bd7527d4fecb0f36d0cf6ef42bebb4d4c6c70f3baced0231cab7575819",
+      url: "https://github.com/MisakaMikoto128/serialhub/releases/download/v1.7.1/serialhub-v1.7.1-linux-x86_64.tar.gz"
+    },
+    macos: {
+      file: "serialhub-v1.7.1-macos-aarch64-unsigned.tar.gz",
+      spec: "macOS Apple Silicon · tar.gz · 约 1.8 MB · 未签名",
+      sha256: "250951d133fdcf1afa22746a1d740171c13144b6336ae1705970be5128c3ab5f",
+      url: "https://github.com/MisakaMikoto128/serialhub/releases/download/v1.7.1/serialhub-v1.7.1-macos-aarch64-unsigned.tar.gz"
+    }
+  }
+};
+</script>
+<style>
+/* ═══ 设计令牌 (704 web-ui.md, 全部 --wh-*) ═══ */
+:root{
+  /* 色板 18 */
+  --wh-bg:#f7f9fb;
+  --wh-panel:#ffffff;
+  --wh-panel-2:#f6f8fa;
+  --wh-ink:#1c2630;
+  --wh-muted:#5f6b76;
+  --wh-faint:#8b96a1;
+  --wh-accent:#0e6db8;
+  --wh-accent-hover:#0b5c9c;
+  --wh-accent-ink:#ffffff;
+  --wh-border:#d3dae1;
+  --wh-border-strong:#b7c1cb;
+  --wh-code-bg:#f6f8fa;
+  --wh-code-ink:#1c2630;
+  --wh-term-bg:#14171a;
+  --wh-term-ink:#e8eaed;
+  --wh-term-border:#2c313a;
+  --wh-term-faint:#828c99;
+  --wh-term-accent:#5aa9dc; /* 扩展: 深色条内幽灵钮 hover 提亮蓝 (ui 规范 §4.3 "提亮蓝思路") */
+  --wh-ok:#1e8e4e;
+  /* 字体与字阶 8 */
+  --wh-sans:"Segoe UI","Microsoft YaHei","PingFang SC",system-ui,sans-serif;
+  --wh-mono:Consolas,"Cascadia Mono","SFMono-Regular",Menlo,monospace;
+  --wh-fs-hero:28px;
+  --wh-fs-h2:21px;
+  --wh-fs-h3:17px;
+  --wh-fs-body:15px;
+  --wh-fs-small:12px;
+  --wh-fs-mono:13px;
+  /* 间距 / 布局 11 */
+  --wh-sp-1:4px;
+  --wh-sp-2:8px;
+  --wh-sp-3:12px;
+  --wh-sp-4:16px;
+  --wh-sp-5:24px;
+  --wh-sp-6:32px;
+  --wh-sp-7:48px;
+  --wh-sp-8:64px;
+  --wh-sp-9:96px;
+  --wh-container:1100px;
+  --wh-nav-h:56px;
+  /* 圆角 / 阴影 / 控件 10 */
+  --wh-radius:8px;
+  --wh-radius-sm:4px;
+  --wh-pill:999px;
+  --wh-shadow-1:0 1px 2px rgba(28,38,48,.06);
+  --wh-shadow-2:0 6px 24px rgba(28,38,48,.10);
+  --wh-shadow-3:0 10px 40px rgba(28,38,48,.16);
+  --wh-btn-h:40px;
+  --wh-btn-h-lg:48px;
+  --wh-btn-px:20px;
+}
+@media (min-width:720px){
+  :root{
+    --wh-fs-hero:36px;
+    --wh-fs-h2:24px;
+    --wh-fs-h3:18px;
+    --wh-fs-body:16px;
+    --wh-fs-small:13px;
+    --wh-fs-mono:14px;
+  }
+}
+@media (min-width:1440px){
+  :root{
+    --wh-fs-hero:44px;
+    --wh-fs-h2:28px;
+  }
+}
+
+/* ═══ 基础 ═══ */
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth;scroll-padding-top:calc(var(--wh-nav-h) + 12px)}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{
+  font-family:var(--wh-sans);
+  font-size:var(--wh-fs-body);
+  line-height:1.7;
+  color:var(--wh-ink);
+  background:var(--wh-bg);
+}
+img{max-width:100%}
+a{color:var(--wh-accent)}
+:focus-visible{outline:2px solid var(--wh-accent);outline-offset:1px}
+.container{max-width:var(--wh-container);margin-inline:auto;padding-inline:16px}
+@media (min-width:720px){.container{padding-inline:24px}}
+
+/* ═══ 导航 (粘性) ═══ */
+.nav{
+  position:sticky;top:0;z-index:50;
+  height:var(--wh-nav-h);
+  background:var(--wh-panel);
+  border-bottom:2px solid var(--wh-border-strong);
+}
+.nav-in{
+  max-width:var(--wh-container);margin-inline:auto;padding-inline:16px;
+  height:100%;display:flex;align-items:center;justify-content:space-between;gap:var(--wh-sp-4);
+}
+@media (min-width:720px){.nav-in{padding-inline:24px}}
+.brand{display:flex;align-items:center;gap:var(--wh-sp-2);font-weight:700;font-size:16px;color:var(--wh-ink);text-decoration:none;white-space:nowrap}
+.brand-mark{width:10px;height:10px;background:var(--wh-accent);flex:none}
+.nav-links{display:flex;gap:var(--wh-sp-5);list-style:none;overflow-x:auto;white-space:nowrap;-webkit-overflow-scrolling:touch}
+.nav-links a{font-size:14px;color:var(--wh-muted);text-decoration:none}
+.nav-links a:hover{color:var(--wh-accent)}
+
+/* ═══ 区块通用 ═══ */
+.sec{padding-top:var(--wh-sp-7)}
+@media (min-width:720px){.sec{padding-top:var(--wh-sp-8)}}
+@media (min-width:1440px){.sec{padding-top:var(--wh-sp-9)}}
+.eyebrow{font-family:var(--wh-mono);font-size:12px;letter-spacing:2px;text-transform:uppercase;color:var(--wh-faint)}
+.sec-head h2{font-size:var(--wh-fs-h2);line-height:1.25;font-weight:700;margin-top:var(--wh-sp-2)}
+
+/* ═══ Hero ═══ */
+.hero{padding:var(--wh-sp-6) 0 var(--wh-sp-7);border-bottom:1px solid var(--wh-border);text-align:center}
+@media (min-width:720px){.hero{padding:var(--wh-sp-7) 0 var(--wh-sp-8)}}
+@media (min-width:1440px){.hero{padding:var(--wh-sp-8) 0 var(--wh-sp-9)}}
+.hero h1{font-size:var(--wh-fs-hero);line-height:1.2;font-weight:700;letter-spacing:.5px;margin-top:var(--wh-sp-4)}
+.hero-sub{max-width:640px;margin:var(--wh-sp-4) auto 0;color:var(--wh-muted);font-size:var(--wh-fs-h3);font-weight:400}
+.hero-cta{display:flex;flex-direction:column;gap:var(--wh-sp-3);margin-top:var(--wh-sp-6)}
+@media (min-width:720px){.hero-cta{flex-direction:row;justify-content:center;align-items:center}}
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:var(--wh-sp-2);
+  height:var(--wh-btn-h);padding-inline:var(--wh-btn-px);
+  border-radius:var(--wh-radius);border:1px solid transparent;
+  font-family:var(--wh-sans);font-size:var(--wh-fs-body);text-decoration:none;cursor:pointer;
+}
+.btn-lg{height:var(--wh-btn-h-lg)}
+.btn-primary{background:var(--wh-accent);color:var(--wh-accent-ink)}
+.btn-primary:hover{background:var(--wh-accent-hover)}
+.btn-secondary{background:var(--wh-panel);color:var(--wh-ink);border-color:var(--wh-border-strong)}
+.btn-secondary:hover{border-color:var(--wh-accent);color:var(--wh-accent)}
+.hero-cta .btn{width:100%}
+@media (min-width:720px){.hero-cta .btn{width:auto}}
+.pill-row{display:flex;flex-wrap:wrap;justify-content:center;gap:var(--wh-sp-2);margin-top:var(--wh-sp-5)}
+.pill{
+  display:inline-block;padding:2px 12px;
+  background:var(--wh-panel-2);border:1px solid var(--wh-border);border-radius:var(--wh-pill);
+  font-size:13px;color:var(--wh-muted);text-decoration:none;
+}
+.pill:hover{border-color:var(--wh-accent);color:var(--wh-accent)}
+.hero-ver{margin-top:var(--wh-sp-3);font-size:12px;color:var(--wh-faint)}
+
+/* ═══ 特性网格 ═══ */
+.feat-grid{display:grid;grid-template-columns:1fr;gap:var(--wh-sp-5);margin-top:var(--wh-sp-6)}
+@media (min-width:720px){.feat-grid{grid-template-columns:repeat(2,1fr)}}
+@media (min-width:1440px){.feat-grid{grid-template-columns:repeat(3,1fr)}}
+.feat-card{
+  background:var(--wh-panel);border:1px solid var(--wh-border);border-radius:var(--wh-radius);
+  box-shadow:var(--wh-shadow-1);padding:var(--wh-sp-5);
+}
+.feat-card:hover{border-color:var(--wh-border-strong)}
+.feat-ico{display:block;color:var(--wh-accent);margin-bottom:var(--wh-sp-3)}
+.feat-card h3{font-size:var(--wh-fs-h3);font-weight:600}
+.feat-card p{margin-top:var(--wh-sp-2);font-size:var(--wh-fs-small);line-height:1.6;color:var(--wh-muted)}
+
+/* ═══ 截图区 ═══
+   注: 702 素材已自带圆角/细边框/阴影 + 透明外扩画布, 故此处不再叠 CSS 边框阴影
+   (避免"框上加框"), 仅保留圆角容器与点击放大。 */
+.shot-main{margin-top:var(--wh-sp-6)}
+.shot-banner{margin-top:var(--wh-sp-5)}
+.shot-grid{display:grid;grid-template-columns:1fr;gap:var(--wh-sp-5);margin-top:var(--wh-sp-5)}
+@media (min-width:720px){.shot-grid{grid-template-columns:1fr 1fr}}
+.shot{display:block;border-radius:var(--wh-radius);overflow:hidden;background:var(--wh-panel)}
+.shot img{display:block;width:100%;height:auto}
+figure{margin:0}
+figcaption{margin-top:var(--wh-sp-2);font-size:var(--wh-fs-small);line-height:1.6;color:var(--wh-muted)}
+
+/* ═══ 下载区 ═══ */
+.dl-date{margin-top:var(--wh-sp-2);font-size:var(--wh-fs-small);color:var(--wh-faint)}
+.ver-pill{
+  display:inline-block;font-family:var(--wh-mono);font-size:var(--wh-fs-mono);
+  background:var(--wh-panel-2);border:1px solid var(--wh-border);border-radius:var(--wh-pill);
+  padding:1px 12px;vertical-align:2px;
+}
+.dl-grid{display:grid;grid-template-columns:1fr;gap:var(--wh-sp-5);margin-top:var(--wh-sp-6)}
+@media (min-width:1024px){.dl-grid{grid-template-columns:repeat(3,1fr)}}
+.dl-card{
+  background:var(--wh-panel);border:1px solid var(--wh-border);border-radius:var(--wh-radius);
+  box-shadow:var(--wh-shadow-1);padding:var(--wh-sp-5);
+  display:flex;flex-direction:column;gap:var(--wh-sp-3);
+}
+.dl-card:hover{border-color:var(--wh-border-strong)}
+.dl-card h3{font-size:var(--wh-fs-body);font-weight:600}
+.dl-spec{font-family:var(--wh-mono);font-size:var(--wh-fs-small);color:var(--wh-muted)}
+.dl-file{font-family:var(--wh-mono);font-size:12px;line-height:1.5;color:var(--wh-faint);word-break:break-all}
+.dl-desc{font-size:var(--wh-fs-small);line-height:1.6;color:var(--wh-muted)}
+.dl-btn{width:100%}
+.sha-label{font-family:var(--wh-mono);font-size:11px;letter-spacing:1px;color:var(--wh-faint)}
+.sha-bar{position:relative;background:var(--wh-term-bg);border:1px solid var(--wh-term-border);border-radius:var(--wh-radius)}
+.sha-bar code{
+  display:block;padding:10px 52px 10px 12px;
+  font-family:var(--wh-mono);font-size:12px;line-height:1.5;color:var(--wh-term-ink);
+  word-break:break-all; /* 深色命令条内的长 SHA 是唯一允许 break-all 的地方 */
+}
+.copy-btn{
+  position:absolute;top:50%;transform:translateY(-50%);right:6px;
+  background:transparent;border:none;border-radius:var(--wh-radius-sm);
+  font-family:var(--wh-sans);font-size:12px;color:var(--wh-term-faint);
+  padding:4px 6px;cursor:pointer;white-space:nowrap;
+}
+.copy-btn:hover{color:var(--wh-term-accent)}
+.copy-btn.ok{color:var(--wh-ok)}
+.copy-btn.err{color:#d07a5a}
+.cmdbar{position:relative;background:var(--wh-term-bg);border:1px solid var(--wh-term-border);border-radius:var(--wh-radius)}
+.cmdbar code{
+  display:block;padding:10px 76px 10px 12px;
+  font-family:var(--wh-mono);font-size:var(--wh-fs-mono);color:var(--wh-term-ink);
+  white-space:nowrap;overflow-x:auto;
+}
+.cmdbar .copy-btn{right:6px}
+.dl-notes{margin-top:var(--wh-sp-6);display:flex;flex-direction:column;gap:var(--wh-sp-4)}
+.note{
+  background:var(--wh-panel);border:1px solid var(--wh-border);border-radius:var(--wh-radius);
+  padding:var(--wh-sp-3) var(--wh-sp-4);font-size:var(--wh-fs-small);line-height:1.6;color:var(--wh-muted);
+}
+.sysreq{font-size:var(--wh-fs-small);color:var(--wh-muted)}
+.sha-note{font-size:var(--wh-fs-small);color:var(--wh-muted)}
+.inline-code{
+  font-family:var(--wh-mono);font-size:12px;color:var(--wh-code-ink);
+  background:var(--wh-code-bg);border:1px solid var(--wh-border);border-radius:var(--wh-radius-sm);
+  padding:1px 6px;word-break:break-all;
+}
+.dl-tail{margin-top:var(--wh-sp-5);display:flex;flex-direction:column;gap:var(--wh-sp-2)}
+.dl-history{font-size:var(--wh-fs-body)}
+.dl-mirror{font-size:var(--wh-fs-small);color:var(--wh-faint)}
+
+/* ═══ 快速开始 ═══ */
+.qs-steps{margin-top:var(--wh-sp-6)}
+.qs-step{position:relative;padding-left:44px;padding-bottom:var(--wh-sp-5)}
+.qs-step:last-child{padding-bottom:0}
+.qs-step:not(:last-child)::before{ /* <720 纵向时间线虚线 */
+  content:"";position:absolute;left:13px;top:34px;bottom:4px;
+  border-left:2px dashed var(--wh-border-strong);
+}
+.qs-head{display:flex;align-items:center;gap:var(--wh-sp-3);margin-bottom:var(--wh-sp-2)}
+.qs-num{
+  width:28px;height:28px;flex:none;
+  display:flex;align-items:center;justify-content:center;
+  background:var(--wh-panel-2);border:1px solid var(--wh-border-strong);border-radius:var(--wh-radius-sm);
+  font-family:var(--wh-mono);font-size:var(--wh-fs-small);font-weight:600;
+}
+.qs-head h3{font-size:var(--wh-fs-h3);font-weight:600}
+.qs-desc{font-size:14px;color:var(--wh-muted)}
+.qs-step .cmdbar{margin-top:var(--wh-sp-3)}
+@media (min-width:720px){
+  .qs-steps{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--wh-sp-6)}
+  .qs-step{padding-left:0;padding-bottom:0}
+  .qs-step::before{display:none}
+  .qs-step:not(:last-child)::after{ /* ≥720 横向虚线导线 (产品 .wire 母题) */
+    content:"";position:absolute;top:13px;left:40px;right:calc(8px - var(--wh-sp-6));
+    border-top:2px dashed var(--wh-border-strong);
+  }
+}
+
+/* ═══ 更新日志 ═══ */
+.log-list{list-style:none;margin-top:var(--wh-sp-6);border-top:1px solid var(--wh-border)}
+.log-item{padding-block:var(--wh-sp-4);border-bottom:1px solid var(--wh-border)}
+.log-head{display:flex;align-items:center;gap:var(--wh-sp-3);flex-wrap:wrap}
+.ver-chip{
+  position:relative;display:inline-block;
+  font-family:var(--wh-mono);font-size:var(--wh-fs-mono);
+  background:var(--wh-panel-2);border:1px solid var(--wh-border);border-radius:var(--wh-pill);
+  padding:1px 12px;
+}
+.ver-chip.latest::before{
+  content:"";display:inline-block;width:8px;height:8px;border-radius:50%;
+  background:var(--wh-ok);margin-right:6px;vertical-align:1px;
+}
+.log-date{font-size:var(--wh-fs-small);color:var(--wh-faint)}
+.log-sum{margin-top:var(--wh-sp-2);font-size:14px;color:var(--wh-muted)}
+.log-more{margin-top:var(--wh-sp-5);text-align:right}
+
+/* ═══ 页脚 ═══ */
+.footer{margin-top:var(--wh-sp-7);background:var(--wh-panel);border-top:2px solid var(--wh-border-strong)}
+@media (min-width:720px){.footer{margin-top:var(--wh-sp-8)}}
+@media (min-width:1440px){.footer{margin-top:var(--wh-sp-9)}}
+.foot-grid{display:grid;grid-template-columns:1fr;gap:var(--wh-sp-6);padding-block:var(--wh-sp-7)}
+@media (min-width:720px){.foot-grid{grid-template-columns:2fr 1fr 1.6fr}}
+.foot-brand{display:flex;align-items:center;gap:var(--wh-sp-2);font-weight:700;font-size:16px}
+.foot-tag{margin-top:var(--wh-sp-2);font-size:var(--wh-fs-small);color:var(--wh-muted)}
+.foot-lic{margin-top:var(--wh-sp-3);font-size:var(--wh-fs-small);color:var(--wh-muted)}
+.foot-links{list-style:none}
+.foot-links li{margin-bottom:var(--wh-sp-2)}
+.foot-links a{font-size:var(--wh-fs-small);color:var(--wh-muted);text-decoration:none}
+.foot-links a:hover{color:var(--wh-accent)}
+.foot-warn{font-size:var(--wh-fs-small);line-height:1.7;color:var(--wh-muted)}
+.foot-bottom{border-top:1px solid var(--wh-border)}
+.foot-bottom .container{padding-block:var(--wh-sp-4);font-size:12px;color:var(--wh-faint)}
+
+/* ═══ 截图放大 (原生 dialog) ═══ */
+dialog#lightbox{
+  border:1px solid var(--wh-border);border-radius:var(--wh-radius);
+  background:var(--wh-bg);padding:var(--wh-sp-3);
+  max-width:none;max-height:none;
+}
+dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
+#lightbox img{display:block;max-width:90vw;max-height:88vh;width:auto;height:auto;border-radius:var(--wh-radius-sm)}
+#lightbox .lb-foot{display:flex;justify-content:flex-end;margin-top:var(--wh-sp-2)}
+</style>
+</head>
+<body>
+
+<!-- ═══════════ 导航 ═══════════ -->
+<nav class="nav" aria-label="站点导航">
+  <div class="nav-in">
+    <a class="brand" href="#top"><span class="brand-mark" aria-hidden="true"></span>SerialHub</a>
+    <ul class="nav-links">
+      <li><a href="#features">特性</a></li>
+      <li><a href="#screenshots">截图</a></li>
+      <li><a href="#download">下载</a></li>
+      <li><a href="#quickstart">快速开始</a></li>
+      <li><a href="#changelog">更新日志</a></li>
+    </ul>
+  </div>
+</nav>
+
+<!-- ═══════════ Hero ═══════════ -->
+<header class="hero" id="top">
+  <div class="container">
+    <p class="eyebrow">SERIAL ⇄ WEB BRIDGE</p>
+    <h1>让网页和脚本直接读写串口</h1>
+    <p class="hero-sub">SerialHub 把串口设备变成一条 WebSocket 字节管道，浏览器页面和脚本直接读写原始字节。多座桥在一个网页管理台里同时运行，建桥、启停、看速率都在一处。</p>
+    <div class="hero-cta">
+      <a class="btn btn-primary btn-lg" href="#download">下载 SerialHub</a>
+      <a class="btn btn-secondary btn-lg" href="https://github.com/MisakaMikoto128/serialhub" target="_blank" rel="noopener">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path fill="currentColor" fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub 仓库
+      </a>
+    </div>
+    <p class="pill-row">
+      <a class="pill" href="#dl-windows">Windows</a>
+      <a class="pill" href="#dl-linux">Linux</a>
+      <a class="pill" href="#dl-macos">macOS</a>
+    </p>
+    <p class="hero-ver">当前版本 <span data-rel="version">v1.7.1</span> · 三平台安装包</p>
+  </div>
+</header>
+
+<main>
+  <!-- ═══════════ 特性 ═══════════ -->
+  <section class="sec" id="features">
+    <div class="container">
+      <div class="sec-head">
+        <p class="eyebrow">FEATURES</p>
+        <h2>核心特性</h2>
+      </div>
+      <div class="feat-grid">
+        <article class="feat-card">
+          <svg class="feat-ico" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M6.5 7h.01M6.5 17h.01"/></svg>
+          <h3>多桥并存管理台</h3>
+          <p>一个网页同时管多座桥：建桥、启停、改配置、删除，重启程序后自动恢复。</p>
+        </article>
+        <article class="feat-card">
+          <svg class="feat-ico" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v4h-4"/></svg>
+          <h3>串口热拔插自动重连</h3>
+          <p>串口拔出再插回，桥自己按秒重试接回设备，网页和脚本不用做任何事。</p>
+        </article>
+        <article class="feat-card">
+          <svg class="feat-ico" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 13h4l2.5-7 5 12 2.5-5h4"/></svg>
+          <h3>实时速率统计与流程图</h3>
+          <p>每座桥一张流程图，有数据流动线路就点亮；收发速率和累计字节数每秒刷新。</p>
+        </article>
+        <article class="feat-card">
+          <svg class="feat-ico" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3.5" y="3.5" width="11" height="11" rx="1.5"/><rect x="9.5" y="9.5" width="11" height="11" rx="1.5"/></svg>
+          <h3>主题插件</h3>
+          <p>内置浅色、深色、奥利奥、Windows 95 四套主题；放一个样式文件进主题文件夹就是新主题，切换不刷新页面。</p>
+        </article>
+        <article class="feat-card">
+          <svg class="feat-ico" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/><path d="M7 13.5l3 2.5-3 2.5"/><path d="M12.5 18.5H17"/></svg>
+          <h3>桌面客户端与命令行双形态</h3>
+          <p>双击打开就是带系统托盘的桌面应用；加一个参数变纯命令行，脚本和自动测试照样用。</p>
+        </article>
+        <article class="feat-card">
+          <svg class="feat-ico" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z"/><path d="M4 7.5l8 4.5 8-4.5"/><path d="M12 12v9"/></svg>
+          <h3>单文件免安装零依赖</h3>
+          <p>一个可执行文件就是全部，下载解压即用，不用跑安装向导。</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════ 截图 ═══════════ -->
+  <section class="sec" id="screenshots">
+    <div class="container">
+      <div class="sec-head">
+        <p class="eyebrow">SCREENSHOTS</p>
+        <h2>眼见为实</h2>
+      </div>
+      <figure class="shot-main">
+        <a class="shot" href="./assets/shot-dashboard.png" target="_blank" rel="noopener">
+          <img src="./assets/shot-dashboard.png" alt="管理台总览" width="1256" height="814" loading="lazy">
+        </a>
+        <figcaption>管理台总览：每座桥一行，状态、速率、连接数一眼看清。</figcaption>
+      </figure>
+      <div class="shot-grid">
+        <figure>
+          <a class="shot" href="./assets/shot-create-bridge.png" target="_blank" rel="noopener">
+            <img src="./assets/shot-create-bridge.png" alt="新建桥表单" width="956" height="627" loading="lazy">
+          </a>
+          <figcaption>新建桥：选串口、设波特率，点创建就跑起来。</figcaption>
+        </figure>
+        <figure>
+          <a class="shot" href="./assets/shot-drawer.png" target="_blank" rel="noopener">
+            <img src="./assets/shot-drawer.png" alt="单桥数据抽屉" width="1256" height="814" loading="lazy">
+          </a>
+          <figcaption>单桥抽屉：串口原始数据只读旁看，ASCII / HEX 随时切换。</figcaption>
+        </figure>
+      </div>
+      <figure class="shot-banner">
+        <a class="shot" href="./assets/shot-flow-stats.png" target="_blank" rel="noopener">
+          <img src="./assets/shot-flow-stats.png" alt="流程图与速率统计" width="1256" height="234" loading="lazy">
+        </a>
+        <figcaption>速率统计：收发火花线实时滚动，字节计数与连接数同步更新。</figcaption>
+      </figure>
+      <div class="shot-grid">
+        <figure>
+          <a class="shot" href="./assets/shot-cli.png" target="_blank" rel="noopener">
+            <img src="./assets/shot-cli.png" alt="命令行形态" width="956" height="260" loading="lazy">
+          </a>
+          <figcaption>命令行形态：纯命令行模式供脚本与自动测试使用。</figcaption>
+        </figure>
+        <figure>
+          <a class="shot" href="./assets/shot-tray.png" target="_blank" rel="noopener">
+            <img src="./assets/shot-tray.png" alt="系统托盘" width="956" height="595" loading="lazy">
+          </a>
+          <figcaption>系统托盘：关窗退到后台不打断收发，图标颜色跟着桥状态变。</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════ 下载 ═══════════ -->
+  <section class="sec" id="download">
+    <div class="container">
+      <div class="sec-head">
+        <p class="eyebrow">DOWNLOAD</p>
+        <h2>下载 SerialHub <span class="ver-pill" data-rel="version">v1.7.1</span></h2>
+        <p class="dl-date"><span data-rel="date">2026-09-14</span> 发布</p>
+      </div>
+
+      <div class="dl-grid">
+        <article class="dl-card" id="dl-windows">
+          <h3>Windows</h3>
+          <p class="dl-spec" data-rel="spec-windows">Windows x86_64 · zip · 约 1.6 MB</p>
+          <p class="dl-file" data-rel="file-windows">serialhub-v1.7.1-windows-x86_64.zip</p>
+          <p class="dl-desc">适合 Windows 10/11 64 位，下载解压后双击 serialhub.exe。</p>
+          <a class="btn btn-primary dl-btn" data-rel="link-windows" href="https://github.com/MisakaMikoto128/serialhub/releases/download/v1.7.1/serialhub-v1.7.1-windows-x86_64.zip">下载 Windows 版</a>
+          <p class="sha-label">SHA256</p>
+          <div class="sha-bar">
+            <code data-rel="sha-windows">788fec72613b57e0a7e8919e5a86b459eef23bbe84d71eb771ed270455d2dfe0</code>
+            <button type="button" class="copy-btn" aria-live="polite" aria-label="复制 SHA256 校验值">复制</button>
+          </div>
+        </article>
+
+        <article class="dl-card" id="dl-linux">
+          <h3>Linux</h3>
+          <p class="dl-spec" data-rel="spec-linux">Linux x86_64 · tar.gz · 约 1.9 MB</p>
+          <p class="dl-file" data-rel="file-linux">serialhub-v1.7.1-linux-x86_64.tar.gz</p>
+          <p class="dl-desc">适合主流 64 位发行版，脚本与服务器场景可用纯命令行模式。</p>
+          <a class="btn btn-primary dl-btn" data-rel="link-linux" href="https://github.com/MisakaMikoto128/serialhub/releases/download/v1.7.1/serialhub-v1.7.1-linux-x86_64.tar.gz">下载 Linux 版</a>
+          <p class="sha-label">SHA256</p>
+          <div class="sha-bar">
+            <code data-rel="sha-linux">b242b8bd7527d4fecb0f36d0cf6ef42bebb4d4c6c70f3baced0231cab7575819</code>
+            <button type="button" class="copy-btn" aria-live="polite" aria-label="复制 SHA256 校验值">复制</button>
+          </div>
+        </article>
+
+        <article class="dl-card" id="dl-macos">
+          <h3>macOS</h3>
+          <p class="dl-spec" data-rel="spec-macos">macOS Apple Silicon · tar.gz · 约 1.8 MB · 未签名</p>
+          <p class="dl-file" data-rel="file-macos">serialhub-v1.7.1-macos-aarch64-unsigned.tar.gz</p>
+          <p class="dl-desc">适合 Apple 芯片 (M 系列) Mac，首次打开见下方放行提示。</p>
+          <a class="btn btn-primary dl-btn" data-rel="link-macos" href="https://github.com/MisakaMikoto128/serialhub/releases/download/v1.7.1/serialhub-v1.7.1-macos-aarch64-unsigned.tar.gz">下载 macOS 版</a>
+          <p class="sha-label">SHA256</p>
+          <div class="sha-bar">
+            <code data-rel="sha-macos">250951d133fdcf1afa22746a1d740171c13144b6336ae1705970be5128c3ab5f</code>
+            <button type="button" class="copy-btn" aria-live="polite" aria-label="复制 SHA256 校验值">复制</button>
+          </div>
+        </article>
+      </div>
+
+      <noscript><p class="note" style="margin-top:var(--wh-sp-4)">检测到浏览器未启用 JavaScript：请直接前往 <a href="https://github.com/MisakaMikoto128/serialhub/releases" target="_blank" rel="noopener">GitHub Releases</a> 下载安装包。</p></noscript>
+
+      <div class="dl-notes">
+        <p class="note">macOS 安装包未签名：首次打开若被系统拦下，右键点文件选「打开」，再点一次「打开」即可放行。</p>
+        <p class="sysreq">系统要求：Windows 10/11（64 位）· Linux x86_64 · macOS（Apple Silicon）；管理台建议用现代浏览器打开。</p>
+        <p class="sha-note">下载后核对这串校验值与本地文件一致，即可确认安装包完整、未被篡改。<br>
+        校验命令：Windows：<code class="inline-code">certutil -hashfile &lt;文件名&gt; SHA256</code>；Linux / macOS：<code class="inline-code">shasum -a 256 &lt;文件名&gt;</code></p>
+        <div class="dl-tail">
+          <p class="dl-history"><a data-rel="releases" href="https://github.com/MisakaMikoto128/serialhub/releases" target="_blank" rel="noopener">查看全部历史版本 →</a></p>
+          <p class="dl-mirror">国内直链通道筹备中，当前请从 GitHub Releases 下载</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════ 快速开始 ═══════════ -->
+  <section class="sec" id="quickstart">
+    <div class="container">
+      <div class="sec-head">
+        <p class="eyebrow">QUICK START</p>
+        <h2>三步上手</h2>
+      </div>
+      <div class="qs-steps">
+        <div class="qs-step">
+          <div class="qs-head"><span class="qs-num" aria-hidden="true">1</span><h3>下载并解压</h3></div>
+          <p class="qs-desc">从上方下载对应平台的压缩包，解压出 serialhub 可执行文件。</p>
+        </div>
+        <div class="qs-step">
+          <div class="qs-head"><span class="qs-num" aria-hidden="true">2</span><h3>运行 serialhub</h3></div>
+          <p class="qs-desc">Windows 双击 serialhub.exe；Linux / macOS 在终端执行 <code class="inline-code">./serialhub</code>。</p>
+          <div class="cmdbar">
+            <code>./serialhub</code>
+            <button type="button" class="copy-btn" aria-live="polite" aria-label="复制命令">复制</button>
+          </div>
+        </div>
+        <div class="qs-step">
+          <div class="qs-head"><span class="qs-num" aria-hidden="true">3</span><h3>打开管理台</h3></div>
+          <p class="qs-desc">浏览器打开 <code class="inline-code">http://127.0.0.1:8080</code>，点「新建桥」选好串口，桥就跑起来了。</p>
+          <div class="cmdbar">
+            <code>http://127.0.0.1:8080</code>
+            <button type="button" class="copy-btn" aria-live="polite" aria-label="复制管理台网址">复制</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════ 更新日志 ═══════════ -->
+  <section class="sec" id="changelog">
+    <div class="container">
+      <div class="sec-head">
+        <p class="eyebrow">CHANGELOG</p>
+        <h2>更新日志</h2>
+      </div>
+      <ol class="log-list">
+        <li class="log-item">
+          <div class="log-head"><span class="ver-chip latest" data-rel="version">v1.7.1</span><span class="log-date" data-rel="date">2026-09-14</span></div>
+          <p class="log-sum">修复了窗口位置大小记不住、新建桥表单偶发参数丢失的问题；波特率选择框也重做得更好用了。</p>
+        </li>
+        <li class="log-item">
+          <div class="log-head"><span class="ver-chip">v1.7.0</span><span class="log-date">2026-09-14</span></div>
+          <p class="log-sum">窗口大小和位置退出时保存、重启逐像素恢复；新建桥自动记住上次的串口和波特率，连建多座桥更快。</p>
+        </li>
+        <li class="log-item">
+          <div class="log-head"><span class="ver-chip">v1.6.1</span><span class="log-date">2026-09-14</span></div>
+          <p class="log-sum">Windows 95 主题更正宗：全站直角、立体凹凸按钮、经典藏蓝标题栏。</p>
+        </li>
+        <li class="log-item">
+          <div class="log-head"><span class="ver-chip">v1.6.0</span><span class="log-date">2026-09-14</span></div>
+          <p class="log-sum">新增 Windows 95 主题——经典青灰配色致敬老系统，成为内置第四套主题。</p>
+        </li>
+        <li class="log-item">
+          <div class="log-head"><span class="ver-chip">v1.5.0</span><span class="log-date">2026-09-14</span></div>
+          <p class="log-sum">全站复制改成图标按钮并配「已复制」气泡；「打开面板」一键在浏览器打开管理台；托盘右键菜单更顺手。</p>
+        </li>
+      </ol>
+      <p class="log-more"><a data-rel="changelog" href="https://github.com/MisakaMikoto128/serialhub/blob/main/CHANGELOG.md" target="_blank" rel="noopener">查看全部更新日志 →</a></p>
+    </div>
+  </section>
+</main>
+
+<!-- ═══════════ 页脚 ═══════════ -->
+<footer class="footer">
+  <div class="container">
+    <div class="foot-grid">
+      <div>
+        <p class="foot-brand"><span class="brand-mark" aria-hidden="true"></span>SerialHub</p>
+        <p class="foot-tag">让网页和脚本直接读写串口</p>
+        <p class="foot-lic">SerialHub 基于 <a href="https://github.com/MisakaMikoto128/serialhub/blob/main/LICENSE" target="_blank" rel="noopener">Apache License 2.0</a> 开源发布。</p>
+      </div>
+      <div>
+        <ul class="foot-links">
+          <li><a href="https://github.com/MisakaMikoto128/serialhub" target="_blank" rel="noopener">GitHub 仓库</a></li>
+          <li><a href="https://github.com/MisakaMikoto128/serialhub/blob/main/docs/manual/%E7%94%A8%E6%88%B7%E4%BD%BF%E7%94%A8%E6%89%8B%E5%86%8C.md" target="_blank" rel="noopener">用户使用手册</a></li>
+          <li><a href="https://github.com/MisakaMikoto128/serialhub/blob/main/SECURITY.md" target="_blank" rel="noopener">安全说明</a></li>
+        </ul>
+      </div>
+      <div>
+        <p class="foot-warn">安全提示：当前版本管理台与数据通信未加密、无鉴权，请仅在本机或可信内网使用，勿暴露到公网。</p>
+      </div>
+    </div>
+  </div>
+  <div class="foot-bottom">
+    <div class="container">© 2026 SerialHub · 本站无 Cookie、无统计脚本、无外部请求</div>
+  </div>
+</footer>
+
+<!-- ═══════════ 截图放大层 ═══════════ -->
+<dialog id="lightbox" aria-label="截图放大查看">
+  <img id="lightbox-img" alt="">
+  <div class="lb-foot"><button type="button" class="btn btn-secondary" id="lightbox-close">关闭</button></div>
+</dialog>
+
+<script>
+(function(){
+  "use strict";
+  var $$ = function(s){ return Array.prototype.slice.call(document.querySelectorAll(s)); };
+  var $ = function(s){ return document.querySelector(s); };
+
+  /* ── RELEASE 数据块渲染 (WEB-2: 逐版只改顶部 const RELEASE) ── */
+  if (typeof RELEASE === "object" && RELEASE) {
+    $$('[data-rel="version"]').forEach(function(el){ el.textContent = RELEASE.version; });
+    $$('[data-rel="date"]').forEach(function(el){ el.textContent = RELEASE.date; });
+    var set = function(sel, val){ var el = $(sel); if (el && val != null) el.textContent = val; };
+    var setHref = function(sel, val){ var el = $(sel); if (el && val) el.setAttribute("href", val); };
+    ["windows","linux","macos"].forEach(function(k){
+      var p = RELEASE.platforms && RELEASE.platforms[k];
+      if (!p) return;
+      set('[data-rel="spec-' + k + '"]', p.spec);
+      set('[data-rel="file-' + k + '"]', p.file);
+      set('[data-rel="sha-' + k + '"]', p.sha256);
+      setHref('[data-rel="link-' + k + '"]', p.url);
+    });
+    setHref('[data-rel="releases"]', RELEASE.releases);
+    setHref('[data-rel="changelog"]', RELEASE.changelog);
+  }
+
+  /* ── 复制按钮 (navigator.clipboard, 非 HTTPS 回退 execCommand) ── */
+  function legacyCopy(text){
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+  function copyText(text){
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text).then(function(){ return true; }, function(){ return legacyCopy(text); });
+    }
+    return Promise.resolve(legacyCopy(text));
+  }
+  $$(".copy-btn").forEach(function(btn){
+    var host = btn.closest(".sha-bar") || btn.closest(".cmdbar");
+    var code = host ? host.querySelector("code") : null;
+    if (!code) return;
+    var timer = null;
+    btn.addEventListener("click", function(){
+      copyText(code.textContent).then(function(ok){
+        btn.classList.remove("ok", "err");
+        btn.classList.add(ok ? "ok" : "err");
+        btn.textContent = ok ? "已复制" : "复制失败";
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(function(){
+          btn.classList.remove("ok", "err");
+          btn.textContent = "复制";
+        }, 1500);
+      });
+    });
+  });
+
+  /* ── 截图点击放大 (原生 <dialog>, 无 JS 退化为新标签原图) ── */
+  var lb = $("#lightbox"), lbImg = $("#lightbox-img");
+  if (lb && lbImg && typeof lb.showModal === "function") {
+    $$("a.shot").forEach(function(a){
+      a.addEventListener("click", function(e){
+        e.preventDefault();
+        var img = a.querySelector("img");
+        lbImg.src = a.getAttribute("href");
+        lbImg.alt = img ? img.alt : "";
+        lb.showModal();
+      });
+    });
+    $("#lightbox-close").addEventListener("click", function(){ lb.close(); });
+    lb.addEventListener("click", function(e){ if (e.target === lb) lb.close(); }); /* 点背板关闭 */
+  }
+})();
+</script>
+</body>
+</html>
