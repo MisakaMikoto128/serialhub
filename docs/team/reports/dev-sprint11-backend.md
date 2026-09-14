@@ -123,3 +123,26 @@ rgb(255,255,255) on rgb(0,128,128), 见 `dev-sprint11-backend-win95-footer.png`
   fleet.json 新增 window 段为可选字段, 旧断言按 skip-if-absent 语义天然兼容)。
 - 顺手发现未修 (知情即可): win95 "我的桥 (n)" 计数在 QA-sprint10 全景截图里
   呈深色, 疑为当时落盘主题旧拷贝所致, 现行文件已钉白并单测守护。
+
+## 6. BUG-1 修复 — 桥变更整份持久化可抹掉 [window] 段 (201, 2026-09-14)
+
+用户现场: v1.7.0, %APPDATA%\SerialHub\fleet.json window 段消失, 桥 b2/b3/b4, 实例仍在跑
+(8080/8081/COM1 全程未触碰, 复现与验证一律 tempdir)。
+
+- **根因**: `BridgeManager::persist()` 的 [window] 来源只有启动快照 `window_seen`
+  (仅 `restore_fleet` 启动时写一次)。凡"本进程启动时盘上还没有 [window] 段"的会话
+  (旧版清单/升级首启, window_seen=None), GUI 真实退出把窗口几何写上盘之后, 该会话
+  (或同处境的后续会话) 任何一次桥 CRUD/换址触发的整份重写都把 [window] 抹掉;
+  且启动快照还可能比盘上现值旧 (会覆盖退出会话新写入的几何)。FleetFile 序列化
+  结构本身有 window 字段 (round-trip 无缺), 缺的是 persist 的**读盘合并**。
+- **修复** (src/fleet.rs persist): 整份重写前读盘合并 —— [window] 以盘上现值为主源
+  (只有 GUI 退出经 save_window 改它), `window_seen` 降为盘上无文件/解析失败时的
+  兜底; [manager] 维持内存现址为准 (控制面活地址), 新增盘值兜底
+  (set_manager_addr 未登记时不再丢档, 同类风险同堵)。读盘失败静默走兜底,
+  不阻塞"变更即存"。save_window 拒写坏档语义不变。
+- **测试** (+3, 全 tempdir): `persist_keeps_window_section_written_after_startup`
+  (修复前红: window 被抹成 None)、`persist_keeps_manager_section_when_addr_not_registered`
+  (修复前红: manager 被抹)、`persist_prefers_fresh_window_on_disk_over_startup_snapshot`
+  (修复前红: 快照 W1 覆盖盘上 W2)。
+- **回归**: `cargo test` **96 passed / 0 failed** (93 旧 + 3 新); fmt --check /
+  clippy -D warnings 双门禁绿。未 commit; ui/index.html 的未提交改动属并行席位, 未触碰。

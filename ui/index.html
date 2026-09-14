@@ -193,6 +193,29 @@ button.danger.armed{background:var(--err);border-color:var(--err);color:var(--er
 select,input[type=number],input[type=text]{background:var(--panel-2);border:1px solid var(--border-strong);
   border-radius:var(--ctl-radius);height:var(--ctl-h);padding:0 var(--ctl-px);font-size:var(--ctl-fs);min-width:0}
 input[type=number]{width:100%}
+/* 波特率输入 (BUG-3 修复): 藏 number 原生上下箭头 + 去原生 datalist, 换自绘下拉 ——
+   输入框右缘 28px 幽灵 chevron (与 .copy-ghost 同族: 无框无底, 灰 → hover accent),
+   菜单取面板底/边框/圆角/控件字号令牌, 随主题自动翻转 */
+input[type=number].baud-in::-webkit-outer-spin-button,
+input[type=number].baud-in::-webkit-inner-spin-button{display:none;-webkit-appearance:none;margin:0}
+input[type=number].baud-in{-moz-appearance:textfield;appearance:textfield;padding-right:34px}
+.baud-wrap{position:relative;flex:1;min-width:0}
+.baud-ghost{position:absolute;right:4px;top:50%;transform:translateY(-50%);
+  width:28px;height:var(--ctl-h-sm);padding:0;border-color:transparent;background:transparent;
+  color:var(--muted)}
+.baud-ghost:hover:not(:disabled){color:var(--accent);background:transparent;border-color:transparent}
+.baud-ghost[aria-expanded="true"]{color:var(--accent)}
+.baud-ghost svg{width:15px;height:15px;display:block;margin:auto}
+.baud-menu{position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:70;margin:0;padding:4px;
+  list-style:none;background:var(--panel);border:1px solid var(--border-strong);
+  border-radius:var(--ctl-radius);box-shadow:0 6px 24px rgba(0,0,0,.14);
+  max-height:216px;overflow-y:auto;display:none}
+.baud-menu.open{display:block}
+.baud-menu li{padding:6px 10px;border-radius:6px;font-size:var(--ctl-fs);font-family:var(--mono);
+  color:var(--ink);cursor:pointer;white-space:nowrap}
+.baud-menu li:hover{background:var(--panel-2)}
+.baud-menu li.active{background:var(--accent);color:var(--accent-ink)}
+.baud-menu li.empty{color:var(--faint);cursor:default;font-family:var(--sans)}
 /* FR-12 自动重连开关 (修复轮 D2): input 保留语义 (视觉隐藏, 键盘可达), 轨道由相邻 label 承载
    —— 苹果式 44×28 (紧凑档高) 胶囊轨道 + 滑块动画; 勾选/禁用/焦点环随 input 状态联动 */
 .switch{position:absolute;width:1px;height:1px;margin:0;opacity:0;pointer-events:none}
@@ -381,8 +404,13 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
     <div class="ferr" id="npErrPort" hidden></div>
     <div class="field">
       <label for="npBaud">波特率</label>
-      <div class="ctl"><input id="npBaud" type="number" min="110" max="2000000" step="1" value="115200"
-        list="baudList" title="常用 9600 / 115200; 允许 110 ~ 2000000" /></div>
+      <div class="ctl"><div class="baud-wrap">
+        <input id="npBaud" class="baud-in" type="number" min="110" max="2000000" step="1" value="115200"
+          title="常用 9600 / 115200; 允许 110 ~ 2000000" />
+        <button type="button" class="baud-ghost" title="常用波特率" aria-label="常用波特率"
+          aria-haspopup="listbox" aria-expanded="false"></button>
+        <ul class="baud-menu" role="listbox" aria-label="常用波特率"></ul>
+      </div></div>
     </div>
     <div class="ferr" id="npErrBaud" hidden></div>
     <div class="param-row">
@@ -446,13 +474,6 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
     <button id="btnSetApply" type="button" class="primary">应用</button>
   </div>
 </dialog>
-
-<datalist id="baudList">
-  <option value="9600"></option><option value="19200"></option><option value="38400"></option>
-  <option value="57600"></option><option value="115200"></option><option value="230400"></option>
-  <option value="460800"></option><option value="921600"></option><option value="1000000"></option>
-  <option value="2000000"></option>
-</datalist>
 
 <!-- ============ 每桥卡片模板 ============ -->
 <template id="tplCard">
@@ -525,8 +546,13 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
       </div>
       <div class="field">
         <label for="cfBaud">波特率</label>
-        <div class="ctl"><input id="cfBaud" type="number" min="110" max="2000000" step="1" value="115200"
-          list="baudList" title="常用 9600 / 115200; 允许 110 ~ 2000000" /></div>
+        <div class="ctl"><div class="baud-wrap">
+          <input id="cfBaud" class="baud-in" type="number" min="110" max="2000000" step="1" value="115200"
+            title="常用 9600 / 115200; 允许 110 ~ 2000000" />
+          <button type="button" class="baud-ghost" title="常用波特率" aria-label="常用波特率"
+            aria-haspopup="listbox" aria-expanded="false"></button>
+          <ul class="baud-menu" role="listbox" aria-label="常用波特率"></ul>
+        </div></div>
       </div>
       <div class="param-row">
         <div class="p"><label for="cfData">数据位</label>
@@ -1072,8 +1098,10 @@ const dlgNew = $("dlgNew");
 /* ================= A2 建桥表单参数记忆 (ADR-22②) =================
    建桥成功时把串口参数记进 localStorage "sh_lastbridge", 下次打开「新建一座桥」
    回填 —— 浏览器侧用户习惯, 不进 fleet.json。串口一项只选回扫描列表里仍存在的口
-   (借 scanInto→fillPortSelect 的 cur 保持机制, 设备拔了自然落回列表默认); 波特率等
-   直接回填, 记录损坏/缺项逐字段按无记忆处理。设置抽屉的编辑表单不参与记忆。 */
+   (借 scanInto→fillPortSelect 的 cur 保持机制, 设备拔了自然落回列表默认)。
+   回填是字段级防御: 记录损坏/缺项/脏值逐字段按无记忆处理, 一个字段坏不连坐其他
+   字段; 整个 restore 包 try, 且任何情况下打开表单都不允许出现空波特率。
+   设置抽屉的编辑表单不参与记忆。 */
 function readLastBridge() {
   try {
     const v = JSON.parse(localStorage.getItem("sh_lastbridge") || "null");
@@ -1087,6 +1115,32 @@ function saveLastBridge(s) {
       stopBits: s.stopBits, flow: s.flow,
     }));
   } catch (_) { /* localStorage 不可用 (隐私模式等): 记不住就算了, 不影响建桥 */ }
+}
+/* 建桥表单默认值 (无记忆/记忆损坏时的基准; dialog 重开不重置表单, 所以每次打开都重钉) */
+function applyBridgeDefaults() {
+  $("npBaud").value = 115200;
+  $("npData").value = "8"; $("npParity").value = "N"; $("npStop").value = "2"; $("npFlow").value = "none";
+}
+/* 逐字段回填 (BUG-2 加固): 只在值合法时写对应控件, 坏字段直接跳过, 一个坏不连坐其他。
+   波特率只认 [110,2000000] 内的有限数字 (字符串一律不收, 防脏记录写空/写错);
+   枚举字段只收选项集内的字符串/数字 (其他类型不做隐式 String 化)。返回是否有回填发生。 */
+function restoreLastBridge(last) {
+  if (!last || typeof last !== "object") return false;
+  let restored = false;
+  const pick = (v, list) => {
+    if (typeof v !== "string" && typeof v !== "number") return null;
+    return list.includes(String(v)) ? String(v) : null;
+  };
+  const b = last.baud;
+  if (typeof b === "number" && Number.isFinite(b) && b >= BAUD_MIN && b <= BAUD_MAX) {
+    $("npBaud").value = b; restored = true;
+  }
+  let v;
+  if ((v = pick(last.dataBits, ["7", "8"]))) { $("npData").value = v; restored = true; }
+  if ((v = pick(last.parity, ["N", "E", "O"]))) { $("npParity").value = v; restored = true; }
+  if ((v = pick(last.stopBits, ["1", "2"]))) { $("npStop").value = v; restored = true; }
+  if ((v = pick(last.flow, ["none", "rtscts", "xonxoff"]))) { $("npFlow").value = v; restored = true; }
+  return restored;
 }
 /* ================= FR-17 网址端口自动递增预填 =================
    打开表单时以管理台端口为基准从 +1 起向上探测, 跳过 fleet 里已被各桥使用的
@@ -1141,22 +1195,24 @@ function openNew() {
   dlgErr(null);
   npFieldErr(null, null);
   $("npName").value = "桥 " + (bridges.length + 1);
-  $("npBaud").value = 115200;
-  $("npData").value = "8"; $("npParity").value = "N"; $("npStop").value = "2"; $("npFlow").value = "none";
-  /* A2: 回填上次成功建桥的参数 (无历史维持上面的默认); 逐字段校验合法再写,
-     防手工改坏的记录把下拉选成空白。网址端口不在此列, 仍走 FR-17 空闲递增。 */
+  applyBridgeDefaults();
+  /* A2: 回填上次成功建桥的参数 (无历史维持上面的默认) —— 字段级: 合法才写,
+     坏字段跳过不连坐; 整段包 try, 炸了按无记忆处理再钉一次默认。
+     网址端口不在此列, 仍走 FR-17 空闲递增。 */
   const hint = $("npRestoreHint");
   hint.hidden = true; hint.textContent = "";
   const last = readLastBridge();
   let restored = false;
-  const inList = (v, list) => list.includes(String(v));
-  if (Number.isFinite(last && last.baud) && last.baud >= BAUD_MIN && last.baud <= BAUD_MAX) {
-    $("npBaud").value = last.baud; restored = true;
+  try {
+    restored = restoreLastBridge(last);
+    /* 串口预填上次值 —— 扫描列表里仍在才会被选回 (fillPortSelect 的 cur 裁决),
+       设备拔了就落回列表默认, 用户自己选 */
+    if (last && last.port) $("npPort").value = String(last.port);
+  } catch (_) {
+    applyBridgeDefaults(); restored = false; /* 任何异常: 按无记忆处理 */
   }
-  if (last && inList(last.dataBits, ["7", "8"])) { $("npData").value = String(last.dataBits); restored = true; }
-  if (last && inList(last.parity, ["N", "E", "O"])) { $("npParity").value = String(last.parity); restored = true; }
-  if (last && inList(last.stopBits, ["1", "2"])) { $("npStop").value = String(last.stopBits); restored = true; }
-  if (last && inList(last.flow, ["none", "rtscts", "xonxoff"])) { $("npFlow").value = String(last.flow); restored = true; }
+  /* 终审: 无论如何打开表单都不允许出现空波特率 */
+  if (!$("npBaud").value) $("npBaud").value = 115200;
   if (restored) { hint.textContent = "已按上次使用的参数填好, 可修改"; hint.hidden = false; }
   /* FR-17: 先留空, 打开后异步探测下一个空闲端口预填 (每次打开重算, 可手改) */
   npListenTouched = false;
@@ -1214,6 +1270,121 @@ async function createBridge() {
     poll();
   }
 }
+
+/* ================= 波特率自绘下拉 (BUG-3 修复) =================
+   原生 number spinner + datalist 箭头挤在输入框右下角, 又挤又丑 —— 藏掉 spinner、
+   去掉 datalist, 换成: 输入框右缘 28px 幽灵 chevron (与复制幽灵同族), 点击/聚焦弹出
+   常用波特率菜单; 输入数字即过滤, ↑↓ 移动高亮 + 回车选中, Esc/失焦/点外关闭。
+   全部用设计令牌着色, 不引外部库; 菜单项点击用 pointerdown+preventDefault,
+   输入框不先失焦 (click 前菜单不会被 blur 关掉)。 */
+const BAUD_PRESETS = [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600, 1000000, 2000000];
+let baudMenuEscAt = 0; /* Esc 只关菜单的时刻: cancel 事件守卫用 (见事件绑定区) */
+const BAUD_CHEVRON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
+  + 'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+  + '<path d="M6 9l6 6 6-6"/></svg>';
+function enhanceBaudInput(inp) {
+  const wrap = inp.closest(".baud-wrap");
+  const btn = wrap && wrap.querySelector(".baud-ghost");
+  const menu = wrap && wrap.querySelector(".baud-menu");
+  if (!btn || !menu) return;
+  btn.innerHTML = BAUD_CHEVRON;
+  let activeIdx = -1;        /* 当前键盘高亮的菜单项下标 */
+  let silent = false;        /* 程序性派发 input 事件时置位, 不当作用户输入重开菜单 */
+  let pendingSelfFocus = false; /* 选中后主动 refocus 的那次 focus 不重开菜单 (一次性, 非时间窗) */
+  const items = () => [...menu.querySelectorAll("li[data-baud]")];
+  const isOpen = () => menu.classList.contains("open");
+  const hasMatch = () => {
+    const q = /^\d+$/.test(inp.value.trim()) ? inp.value.trim() : "";
+    return q === "" || BAUD_PRESETS.some((b) => String(b).includes(q));
+  };
+  function paint() {
+    items().forEach((li, i) => {
+      li.classList.toggle("active", i === activeIdx);
+      if (i === activeIdx) li.setAttribute("aria-selected", "true");
+      else li.removeAttribute("aria-selected");
+    });
+  }
+  function render(byTyping) {
+    const q = byTyping && /^\d+$/.test(inp.value.trim()) ? inp.value.trim() : "";
+    menu.innerHTML = "";
+    const list = BAUD_PRESETS.filter((b) => !q || String(b).includes(q));
+    if (!list.length) {
+      const li = document.createElement("li");
+      li.className = "empty"; li.textContent = "没有匹配的常用波特率 (可直接输入)";
+      menu.appendChild(li);
+    }
+    for (const b of list) {
+      const li = document.createElement("li");
+      li.dataset.baud = b; li.setAttribute("role", "option");
+      li.textContent = String(b);
+      li.addEventListener("pointerdown", (ev) => {
+        ev.preventDefault(); ev.stopPropagation(); /* 输入框不失焦, 菜单不被 blur 关掉 */
+        choose(parseInt(li.dataset.baud, 10));
+      });
+      menu.appendChild(li);
+    }
+    activeIdx = list.length ? 0 : -1; /* 默认高亮第一个匹配项: 回车即选 */
+    paint();
+  }
+  function open(byTyping) { render(byTyping === true); menu.classList.add("open"); btn.setAttribute("aria-expanded", "true"); }
+  function close() { menu.classList.remove("open"); btn.setAttribute("aria-expanded", "false"); }
+  function selfFocus() { /* 菜单选中后的 refocus: 只豁免这一次同步 focus, 不搞时间窗 */
+    if (document.activeElement !== inp) { pendingSelfFocus = true; inp.focus(); }
+  }
+  function choose(b) {
+    silent = true;
+    try {
+      inp.value = String(b);
+      /* 程序性派发, 让既有 input 监听照常跑 (去红框/收错误行/刷新等价命令) */
+      inp.dispatchEvent(new Event("input", { bubbles: true }));
+    } finally { silent = false; }
+    close();
+    selfFocus();
+  }
+  btn.addEventListener("pointerdown", (ev) => {
+    ev.preventDefault(); /* 幽灵钮不抢焦点: 输入框不 blur, 开关由这里全权裁决 */
+    if (isOpen()) close();
+    else { selfFocus(); open(false); }
+  });
+  inp.addEventListener("focus", () => {
+    if (pendingSelfFocus) { pendingSelfFocus = false; return; }
+    open(false);
+  });
+  inp.addEventListener("blur", () => { if (!silent) close(); });
+  inp.addEventListener("input", () => {
+    if (silent) return;
+    if (isOpen()) { render(true); return; } /* 输入即过滤 */
+    /* 关着时 (含原生箭头步进) 只有当前值能匹配到常用项才弹, 不弹"无匹配"空菜单 */
+    if (hasMatch()) open(true);
+  });
+  inp.addEventListener("keydown", (ev) => {
+    if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+      if (!isOpen()) return; /* 菜单关着: 放行给 number 原生步进 */
+      ev.preventDefault();
+      const lis = items();
+      if (!lis.length) return;
+      activeIdx = ev.key === "ArrowDown"
+        ? (activeIdx + 1) % lis.length
+        : (activeIdx - 1 + lis.length) % lis.length;
+      paint();
+      lis[activeIdx].scrollIntoView({ block: "nearest" });
+    } else if (ev.key === "Enter" && isOpen()) {
+      ev.preventDefault();
+      const lis = items();
+      if (activeIdx >= 0 && lis[activeIdx]) choose(parseInt(lis[activeIdx].dataset.baud, 10));
+    } else if (ev.key === "Escape" && isOpen()) {
+      ev.preventDefault(); ev.stopPropagation(); /* 只关菜单, 不关整个弹窗 */
+      baudMenuEscAt = Date.now();
+      close();
+    }
+  });
+  /* 点输入框+菜单以外的任何地方都关 (覆盖 blur 照顾不到的指针场景) */
+  document.addEventListener("pointerdown", (ev) => {
+    if (isOpen() && !wrap.contains(ev.target)) close();
+  });
+}
+enhanceBaudInput($("npBaud"));
+enhanceBaudInput($("cfBaud"));
 
 /* ================= 每桥抽屉 ================= */
 const drawer = $("drawer"), mask = $("mask");
@@ -1786,7 +1957,11 @@ $("btnCreate").addEventListener("click", createBridge);
 $("btnCancelNew").addEventListener("click", () => dlgNew.close());
 $("btnDlgX").addEventListener("click", () => dlgNew.close());
 dlgNew.addEventListener("close", () => dlgErr(null));
-dlgNew.addEventListener("cancel", () => dlgNew.close());
+dlgNew.addEventListener("cancel", (ev) => {
+  /* 波特率菜单开着时 Esc 只关菜单 (keydown 已 preventDefault); 双保险: 刚 Esc 关过
+     菜单的短窗口内忽略 cancel, 兜住 keydown 拦不住 cancel 的引擎差异 */
+  if (!ev.defaultPrevented && Date.now() - baudMenuEscAt > 250) dlgNew.close();
+});
 $("btnNpScan").addEventListener("click", () => scanInto($("npPort")));
 ["npBaud", "npListen"].forEach((id) => $(id).addEventListener("input", () => $(id).classList.remove("invalid")));
 ["npName", "npBaud", "npListen"].forEach((id) => $(id).addEventListener("input", () => npFieldErr(null, null)));

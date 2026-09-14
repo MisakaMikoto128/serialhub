@@ -1,6 +1,6 @@
 [package]
 name = "serialhub"
-version = "1.7.0"
+version = "1.7.1"
 edition = "2021"
 description = "SerialHub — 串口 <-> WebSocket 桥接, 跨平台单二进制 + 内嵌 Web 控制台"
 

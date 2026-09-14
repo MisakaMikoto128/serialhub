@@ -327,9 +327,10 @@ pub struct BridgeManager {
     manager_addr: Mutex<Option<SocketAddr>>,
     /// 恢复 fleet 期间抑制 persist (避免把"暂时绑不上"的桥从清单里抹掉)。
     persist_suppressed: AtomicBool,
-    /// ADR-22①: 启动时从 fleet.json 读到的 [window] 段 —— persist 原样写回,
-    /// 保证桥变更不再抹掉 GUI 的窗口几何 (真实退出时 GUI 经 save_window 更新它)。
-    /// 运行期只有 restore_fleet 写一次; headless 同样只透传 (不产生新值)。
+    /// ADR-22①: 启动时从 fleet.json 读到的 [window] 段 —— persist 的**兜底**
+    /// 来源 (盘上无文件/解析失败时)。BUG-1 起 persist 以盘上现值为主源 (见
+    /// persist 注释), 本快照不再承担"桥变更不抹窗口几何"的主责;
+    /// 运行期只有 restore_fleet 写一次; headless 同样只兜底 (不产生新值)。
     window_seen: RwLock<Option<WindowRec>>,
     next_id: AtomicU64,
 }
@@ -549,18 +550,34 @@ impl BridgeManager {
     }
 
     /// fleet.json 变更即写 (FR-10b)。持久化关闭 (--no-fleet) 或恢复期间 = 空操作。
-    /// FR-13: 同时写入顶层 [manager] 段 (控制面地址, set_manager_addr 登记的现值)。
+    /// FR-13: 同时写入顶层 [manager] 段; ADR-22①/BUG-1: 顶层 [window] 段一律
+    /// 保住 (口径见下), 桥变更/换址的整份重写不再可能抹掉 GUI 窗口几何。
     pub fn persist(&self) {
         if self.persist_suppressed.load(Ordering::Relaxed) {
             return;
         }
         let Some(path) = &self.fleet_path else { return };
         let recs: Vec<FleetBridgeRec> = self.snapshot().iter().map(rec_of_bridge).collect();
-        let manager = self.manager_addr().map(|a| ManagerRec {
-            addr: a.to_string(),
-        });
-        // ADR-22①: [window] 段透传 (启动时读到的现值) —— 桥变更不抹窗口几何
-        let window = *rd(&self.window_seen);
+        // BUG-1 (v1.7.0 用户现场「窗口记忆失效」): 整份重写必须合并盘上现值,
+        // 不能只靠启动快照 —— 本进程启动时盘上可能还没有 [window] 段 (旧版清单/
+        // 升级首启), GUI 退出才把它写上盘; 若 persist 只看 window_seen, 这之后
+        // 的任何桥变更都把窗口几何抹掉。合并口径:
+        //   [window]  = 盘上现值为准 (只有 GUI 真实退出经 save_window 改它,
+        //               盘值即最新), window_seen 仅在盘上无文件/解析失败时兜底;
+        //   [manager] = 内存现址为准 (运行中控制面地址是活真相), 盘值仅在
+        //               set_manager_addr 尚未登记时兜底 (地址不因早退丢档)。
+        // 读盘失败 (文件暂不在/坏档) 静默走兜底, 不阻塞"变更即存"主路径。
+        let disk = load_fleet_file(path).ok();
+        let window = disk
+            .as_ref()
+            .and_then(|ff| ff.window)
+            .or(*rd(&self.window_seen));
+        let manager = self
+            .manager_addr()
+            .map(|a| ManagerRec {
+                addr: a.to_string(),
+            })
+            .or_else(|| disk.as_ref().and_then(|ff| ff.manager.clone()));
         if let Err(e) = save_fleet(path, &recs, manager.as_ref(), window.as_ref()) {
             eprintln!("serialhub: fleet 清单写入失败 ({path:?}): {e}");
         }
@@ -2119,6 +2136,120 @@ mod tests {
         // 缺失文件读 window → None (不报错)
         let _ = std::fs::remove_file(&path);
         assert_eq!(load_window(&path).unwrap(), None);
+    }
+
+    /// BUG-1 复现 (v1.7.0 用户现场「窗口记忆失效」): 本进程启动时盘上还没有
+    /// [window] 段 (旧版清单/升级首启 —— window_seen=None), GUI 真实退出把它
+    /// 写上盘之后, 任何一次桥变更触发的整份持久化都不得把它抹掉。
+    /// persist 的 [window] 来源必须是盘上现值, 不能只有启动快照 window_seen。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn persist_keeps_window_section_written_after_startup() {
+        let path = temp_fleet("bug1win");
+        let mgr = Arc::new(BridgeManager::new(Some(path.clone())));
+        // 不跑 restore_fleet (对应"启动时盘上无 window 段"), 直接以 GUI 退出
+        // 语义把窗口几何写进清单
+        let win = WindowRec {
+            x: 200,
+            y: 100,
+            w: 1200,
+            h: 800,
+            maximized: false,
+        };
+        save_window(&path, win).unwrap();
+        assert_eq!(load_window(&path).unwrap(), Some(win));
+        // 之后建一座桥 (整份持久化) —— [window] 必须原样幸存
+        mgr.create_bridge(BridgeSpec {
+            id: None,
+            name: "BUG-1".into(),
+            serial: SerialConfig::default(),
+            listen: SocketAddr::from(([127, 0, 0, 1], 0)), // 随机端口, 不碰固定口
+            auto_open: false,
+            auto_reconnect: true,
+            max_clients: 0,
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            load_window(&path).unwrap(),
+            Some(win),
+            "桥变更的整份重写不得抹掉 [window] 段 (BUG-1)"
+        );
+        assert_eq!(load_fleet(&path).unwrap().len(), 1, "桥本身照常入档");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// BUG-1 同查 [manager] 段: 本进程尚未登记控制面地址 (set_manager_addr 未调)
+    /// 时, 桥变更的整份重写不得抹掉盘上已有的 [manager] 段 (重启恢复地址不丢)。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn persist_keeps_manager_section_when_addr_not_registered() {
+        let path = temp_fleet("bug1mgr");
+        let mgr_rec = ManagerRec {
+            addr: "127.0.0.1:18200".into(),
+        };
+        save_fleet(&path, &[], Some(&mgr_rec), None).unwrap();
+        let mgr = Arc::new(BridgeManager::new(Some(path.clone())));
+        mgr.create_bridge(BridgeSpec {
+            id: None,
+            name: "BUG-1mgr".into(),
+            serial: SerialConfig::default(),
+            listen: SocketAddr::from(([127, 0, 0, 1], 0)),
+            auto_open: false,
+            auto_reconnect: true,
+            max_clients: 0,
+        })
+        .await
+        .unwrap();
+        let ff = load_fleet_file(&path).unwrap();
+        assert_eq!(
+            ff.manager,
+            Some(mgr_rec),
+            "桥变更的整份重写不得抹掉 [manager] 段 (BUG-1 同查)"
+        );
+        assert_eq!(ff.bridges.len(), 1);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// BUG-1 口径: 盘上现值优先于启动快照 —— 启动时读到 W1 (window_seen),
+    /// 退出会话随后把 W2 写上盘, 本进程再建桥 → 必须保 W2 (盘上最新值),
+    /// 不能拿启动快照 W1 覆盖回去。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn persist_prefers_fresh_window_on_disk_over_startup_snapshot() {
+        let path = temp_fleet("bug1fresh");
+        let w1 = WindowRec {
+            x: 1,
+            y: 2,
+            w: 800,
+            h: 600,
+            maximized: false,
+        };
+        save_fleet(&path, &[], None, Some(&w1)).unwrap();
+        let mgr = Arc::new(BridgeManager::new(Some(path.clone())));
+        restore_fleet(&mgr).await; // window_seen = W1 (启动快照)
+        let w2 = WindowRec {
+            x: 300,
+            y: 200,
+            w: 1100,
+            h: 760,
+            maximized: true,
+        };
+        save_window(&path, w2).unwrap(); // 盘上更新为 W2
+        mgr.create_bridge(BridgeSpec {
+            id: None,
+            name: "BUG-1fresh".into(),
+            serial: SerialConfig::default(),
+            listen: SocketAddr::from(([127, 0, 0, 1], 0)),
+            auto_open: false,
+            auto_reconnect: true,
+            max_clients: 0,
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            load_window(&path).unwrap(),
+            Some(w2),
+            "整份重写必须携带盘上最新 [window], 不得回退到启动快照"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

@@ -76,7 +76,7 @@ def snapshot_foreign_bridges() -> None:
     之后 kill_all_bridges 只清快照之外的本会话实例。"""
     out = subprocess.run(
         ["tasklist", "/FI", "IMAGENAME eq serialhub.exe", "/FO", "CSV", "/NH"],
-        capture_output=True, text=True, check=False).stdout
+        capture_output=True, text=True, check=False, encoding="utf-8", errors="replace").stdout
     for line in out.splitlines():
         parts = [p.strip('"') for p in line.split('","')]
         if len(parts) >= 2 and parts[0].lower() == "serialhub.exe":
@@ -89,7 +89,7 @@ def snapshot_foreign_bridges() -> None:
 def _current_serialhub_pids() -> set[int]:
     out = subprocess.run(
         ["tasklist", "/FI", "IMAGENAME eq serialhub.exe", "/FO", "CSV", "/NH"],
-        capture_output=True, text=True, check=False).stdout
+        capture_output=True, text=True, check=False, encoding="utf-8", errors="replace").stdout
     pids: set[int] = set()
     for line in out.splitlines():
         parts = [p.strip('"') for p in line.split('","')]
