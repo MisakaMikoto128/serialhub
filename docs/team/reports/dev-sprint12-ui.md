@@ -131,3 +131,48 @@
 - F3 全程只调既有 POST /api/fleet/<id>/stop|config|start, 后端零改动; 侦听/统计/等价命令等
   抽屉其余能力未动。
 - F2 菜单贴底裁剪问题沿用 §4 未回归; 抽屉内 cfBaud 与弹窗 npBaud 同组件同行为。
+
+---
+
+# Sprint 12 第三轮 — 视觉修复: 抽屉头部按钮成对 + 全站按钮档位审计
+
+- 日期: 2026-09-14 · 变更文件: **仅 `ui/index.html`** (一行: `#drClose` 加入紧凑档规则) (+本节与截图); 未 commit
+- 依据: 用户实测「设置抽屉里的「停止」钮和「关闭」✕ 尺寸不一致, 看着突兀」
+- 自验: 真程序 debug 构建 (8099) + Playwright 实测全站可见按钮 46 颗 × 高/圆角/字号/内边距;
+  官方像素审计 `tools/ui_pixel_audit.js` **PASS (160 控件 × 7 轮全绿, 含深色)**
+
+## 10. 修复: #drClose 34px → 28px (与 #drToggle 成对)
+
+- **实测取证 (修复前)**: `#drToggle`=28px、`#drClose`=34px 同排 —— drClose 当初没进紧凑档
+  规则 (无 class, 吃了 button 基础 34 档), 同排不同高即用户所说的突兀。
+- **修法**: 紧凑档选择器组追加 `#drClose` (28px 档: 同高/同 12px 内边距/同 8px 圆角/同 13px 字号)。
+  修复前后特写: `drhead-before.png` / `drhead-after.png` (720px 复验: `drhead-after-720.png`,
+  scrollWidth=720 无破版)。
+
+## 11. 全站按钮档位归档表 (修复后实测, 仅列唯一元素; 幽灵族=无框透明图标钮)
+
+| 场景 | 元素 → 文案 | 档位 | 实测高 | 圆角 | 字号 |
+|---|---|---|---|---|---|
+| 页头 | #btnOpenPanel 打开面板 / #btnSettings 设置 / #btnQuit 退出程序 | 标准 | 34 | 8px | 13px |
+| 页头 | #btnCopyUrl 复制网址 (幽灵族) | 紧凑 | 28 | 8px | 13px |
+| 主区 | #btnNew / #btnNew2 新建桥 | 标准 | 34 | 8px | 13px |
+| 卡片 | .act-toggle 启停 / .act-cfg 设置 / .act-del 删除 | 标准 | 34 | 8px | 13px |
+| 卡片 | .bname 桥名 (无框链接样式) | 标准 | 34 | 8px | 13px |
+| 卡片 | .copy-ghost 复制网址 (幽灵族) | 紧凑 | 28 | 8px | 13px |
+| 抽屉头部 | **#drToggle 停止/启动 = #drClose ✕关闭 (本轮成对)** | 紧凑 | **28/28** | 8px | 13px |
+| 抽屉 | #tb-cfg/tap/stats 页签 (data-strip, 圆角由容器承载) | 标准 | 34 | 容器 8px | 13px |
+| 抽屉 | #btnCfScan 扫描 / #btnCfSave 保存(并启动) | 标准 | 34 | 8px | 13px |
+| 抽屉 | #btnDrCopyUrl / #btnCfCopyUrl / #btnCfCopyCmd / .baud-ghost (幽灵族) | 紧凑 | 28 | 8px | 13px |
+| 侦听工具条 | #btnPause 暂停滚动 / #btnTs 时间戳 / #btnClear 清空 | 紧凑 | 28 | 8px | 13px |
+| 侦听工具条 | #viewAscii / #viewHex (.seg data-strip, 圆角由容器承载) | 紧凑 | 28 | 容器 8px | 13px |
+| 新建桥弹窗 | #btnNpScan 扫描 / #btnCancelNew 取消 / #btnCreate 创建并启动 | 标准 | 34 | 8px | 13px |
+| 新建桥弹窗 | #btnDlgX ✕ (幽灵族) / .baud-ghost (幽灵族) | 紧凑 | 28 | 8px | 13px |
+| 设置弹窗 | #btnSetCancel 取消 / #btnSetApply 应用 | 标准 | 34 | 8px | 13px |
+| 设置弹窗 | #btnSetX ✕ (幽灵族) | 紧凑 | 28 | 8px | 13px |
+
+- 断言结果: 全站可见按钮高度**只出现 28/34 两档** (0 违例); 同排实心按钮同档 ——
+  页头三钮全 34 (btnQuit 有显式 34 覆盖, 与邻居同档)、卡片三钮全 34、抽屉头部两钮全 28 (本轮修复点)。
+  幽灵族 (复制/✕/波特率 chevron) 一律 28 无框, 是刻意的轻量家族, 不与实心钮比重量。
+- 官方审计: `tools/ui_pixel_audit.js` PASS —— 160 控件 × 7 轮 (R1 仪表盘…R6 设置弹窗,
+  R7 深色主题) 高度 ∈ {28,34}±0.5px、圆角=主题 --ctl-radius±0.5px 全绿; 全站截图在
+  `output/playwright/ui-audit-*.png`。

@@ -172,8 +172,9 @@ button{background:var(--panel-2);border:1px solid var(--border-strong);border-ra
   height:var(--ctl-h);padding:0 var(--ctl-px);font-size:var(--ctl-fs);color:var(--ink);
   display:inline-flex;align-items:center;justify-content:center;white-space:nowrap}
 /* 紧凑档 (--ctl-h-sm): 仅工具条/标题条/侦听工具条内小按钮 (幽灵复制钮高度在 .copy-ghost 自带) */
-.quit-btn,.x-btn,.seg button,.term-toolbar>button,#drToggle{height:var(--ctl-h-sm)}
+.quit-btn,.x-btn,.seg button,.term-toolbar>button,#drToggle,#drClose{height:var(--ctl-h-sm)}
 #drToggle{flex:none} /* F3: 抽屉头部的停止/启动钮, 与卡片同源同文案 (UI-0), 随轮询实时同步 */
+/* 视觉轮: 抽屉头部两钮 (#drToggle/#drClose) 必须成对 —— 同档 28、同内边距/圆角/字号, 放一起像一对 */
 /* 波3 (UX P2-1): 页头钮统一标准档 34 —— 新钮与原住民同排同高, 不再有"两代按钮" */
 #btnQuit{height:var(--ctl-h)}
 button:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
