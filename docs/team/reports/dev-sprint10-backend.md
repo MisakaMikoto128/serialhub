@@ -84,3 +84,48 @@ curl→kill** 后一切正常, 桥本身无问题。期间观察到第三方 rel
   令牌层与服务链路。
 
 - UI 席复核通过 (301): 三主题 --term-ink 未定义均落回 --ink, 与原继承值零视觉差; 写法/位置合规, 已并入 ui/index.html 结构约定。
+
+## 6. 波2 · win95 主题「真·95 结构版」(主题席, 2026-09-14)
+
+用户实测反馈「win95 不够正宗: 设置框/提示框还是圆角、颜色不对、文字像现代 UI」。
+根因: 第一版只覆盖了颜色令牌, Win95 的魂在结构性样式。重写 `assets/themes/win95.css`,
+在令牌之外追加结构规则 (参考 98.css 做法; 主题文件是整张样式表, 经 `<link>` 挂载):
+
+- **直角到底**: `*{border-radius:0!important}` —— 弹窗/提示气泡/徽章 pill/输入框/
+  按钮/抽屉一个圆角不剩; `.switch-track::before` (伪元素, `*` 打不到) 单独拍平。
+- **凹凸立体**: 按钮/下拉/面板/对话框 `border-color:#dfdfdf #404040 #404040 #dfdfdf`
+  (上左亮下右暗), `button:active` 翻转内陷; 输入/下拉内陷 + 白底; `.stat/.equiv/#term`
+  内陷; 弹窗/抽屉 `box-shadow:none` (95 没有柔投影); 幽灵复制钮保持无框; 页签做立体小舌。
+- **标题栏**: 页头与弹窗头 = 藏蓝 #000080 白粗体字, 弹窗关闭钮 = 银色立体小钮,
+  网址块 = 内陷白窗格; 藏蓝底上焦点环改白。
+- **颜色/字体深化**: 复制气泡 = 经典土黄 tooltip #ffffe1 + 1px 黑边; 桌面青上的零散
+  文字 (footer/工具条计数) 改白 (银字对青仅 3.3:1, 白 5.1:1); 字体栈
+  `Tahoma,"MS Sans Serif","Microsoft YaHei",sans-serif`; 控件字号 12px
+  (**--ctl-h 34/28 未动**, 高度契约保持)。
+- **诚实边界**: 文件头注明浏览器字体反锯齿关不掉, 文字分辨率无法 100% 复刻像素字;
+  真·像素字需内嵌位图字体 (约 +80KB) 留作候选项。
+- 对比度复核全过: 标题栏白字 17.4:1 / .sub 8.2:1 / 银钮黑字 10.4:1 / tooltip 17.9:1 /
+  输入白底黑字 21:1; 徽章与方向色沿用第一版自检值。
+
+### 验证
+
+- `cargo test themes` 9/9 过 (含 `win95_theme_pins_retro_tokens` 致敬语 pin —— 波2
+  首跑曾因重写丢了该注释句挂红, 已补回; 全部令牌 pin 一直绿);
+- `AUDIT_THEME=win95 node tools/ui_pixel_audit.js` → **PASS**: 160 可见控件 × 7 轮,
+  高度 ∈ {28,34}±0.5, 圆角 = 0±0.5, 违例 0; 全景存
+  `docs/team/reports/qa-sprint10/admin-panorama-win95.png`;
+- 真机截图 (COM1 桥 win95-demo open, headless 8093) 存
+  `docs/team/reports/dev-sprint10-ui/`: win95-pano-dashboard.png (浅银/青底全景) +
+  特写 ×5: dialog-settings / dialog-new (藏蓝标题栏+银钮) / tooltip (土黄气泡) /
+  badge (方形徽章+银钮排) / drawer (立体页签+内陷白输入+方形开关)。
+- 功能零变化, 只动 `assets/themes/win95.css` (+二进制重嵌); 未 commit。
+
+### 插曲 (给后续真机测试避坑)
+
+1. 起手时 8080 有常驻 serialhub.exe (PID 53296, 有活跃浏览器连接) 锁住二进制,
+   按 audit 同款口径 `taskkill /IM` 清掉后才能重链; 波2 首次审计/截图全跑在旧皮肤上
+   险些误判 —— 排查发现 `target/release/themes/win95.css` 是 `ensure_builtin` 早期
+   落盘的**旧副本, 会遮蔽新内置主题** (磁盘命中优先, 用户编辑不被覆盖属设计行为)。
+   **改内置主题后必须删 `target/release/themes/<name>.css` 再起后端**, 已删除并由新
+   二进制重新落盘 (8094 字节)。收尾 tasklist 无 serialhub 残留, 8080/8092/8093 全释放,
+   临时脚本已删; **COM8 全程未碰** (仅审计桥 COM1)。
