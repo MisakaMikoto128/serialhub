@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::{FromRequestParts, Path as AxumPath, Request, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, patch, post};
@@ -185,16 +185,37 @@ impl Bridge {
     }
 }
 
-/// 桥数据面路由: 只有 /ws (纯二进制数据面) 与 /api/status (只读投影, 便于直连诊断)。
+/// 桥数据面路由 (ADR-20 双路径兼容): /ws 与 / (裸地址, serial_bridge.py 时代习惯)
+/// 都受理 WS 升级; 其余路径 404 (axum 默认); /api/status 只读投影便于直连诊断。
 fn bridge_router(b: Arc<Bridge>) -> Router {
     Router::new()
         .route("/ws", get(bridge_ws))
+        .route("/", get(bridge_root))
         .route("/api/status", get(bridge_status))
         .with_state(b)
 }
 
 async fn bridge_status(State(b): State<Arc<Bridge>>) -> Response {
     api::status_core(&b.ctx)
+}
+
+/// 桥数据口根路径 (ADR-20): WS 升级请求与 /ws 等价受理;
+/// 普通 HTTP GET → 426 Upgrade Required + 指路
+/// (管理台控制面不受影响, 其 GET / 仍是管理台页面)。
+/// axum 0.8 已移除 Option 提取器且 ws Rejection 私有 → 手动 FromRequestParts 判别。
+async fn bridge_root(State(b): State<Arc<Bridge>>, req: Request) -> Response {
+    let (mut parts, body) = req.into_parts();
+    match WebSocketUpgrade::from_request_parts(&mut parts, &()).await {
+        Ok(upgrade) => {
+            drop(body);
+            bridge_ws(upgrade, State(b)).await
+        }
+        Err(_) => (
+            StatusCode::UPGRADE_REQUIRED,
+            "这是串口数据端点, 请用 WebSocket 连接 (ws://host:port/ws)",
+        )
+            .into_response(),
+    }
 }
 
 /// 桥数据面 /ws: 与 legacy 单桥完全同一个 client_loop (帧语义零变化, 硬约束 1/2/3)。
@@ -2550,6 +2571,42 @@ mod tests {
             assert!(String::from_utf8_lossy(&buf[..n]).starts_with("HTTP/1.1 404"));
         }
         drop(ws);
+        t.shutdown().await;
+    }
+
+    // ---- ADR-20: 数据口双路径 (裸地址 / 与 /ws) + 426 指路 ----
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bridge_data_root_dual_path_and_426() {
+        let t = spawn_mgr(None, None).await;
+        let v = fleet_create_ok(
+            t.addr,
+            r#"{"name":"裸地址","listen":"127.0.0.1:0","autoOpen":false}"#,
+        )
+        .await;
+        let bid = v["id"].as_str().unwrap().to_string();
+        let b = t.mgr.get(&bid).unwrap();
+        let listen = b.listen_addr();
+        // 1) 裸地址 (根路径) 握手成功, 且是真实数据客户端 (RX 注入可收)
+        let mut ws_root = ws_handshake(listen, "/").await;
+        wait_receiver(&b.ctx.bc_tx, Duration::from_secs(2)).await;
+        b.ctx.bc_tx.send(b"root-client".to_vec()).unwrap();
+        let got = ws_recv_binary(&mut ws_root, Duration::from_secs(2)).await;
+        assert_eq!(got, b"root-client");
+        // 2) /ws 握手照常成功
+        let _ws_path = ws_handshake(listen, "/ws").await;
+        // 3) 普通 HTTP GET / → 426 Upgrade Required + 指路
+        let (code, body) = http_req(listen, "GET", "/", None).await;
+        assert_eq!(code, 426);
+        assert!(body.contains("这是串口数据端点"), "{body}");
+        assert!(body.contains("ws://host:port/ws"), "{body}");
+        // 4) 其余路径 404 (axum 默认)
+        let (code, _) = http_req(listen, "GET", "/other", None).await;
+        assert_eq!(code, 404);
+        // 5) 管理台控制面不受影响: GET / 仍是管理台页面
+        let (code, body) = http_req(t.addr, "GET", "/", None).await;
+        assert_eq!(code, 200);
+        assert!(body.contains("SerialHub"), "{body}");
         t.shutdown().await;
     }
 
