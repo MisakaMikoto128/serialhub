@@ -8,11 +8,11 @@
 - **原始字节双向**: WS 纯二进制帧, 多客户端广播, 掉线自动重连 (每桥可关);
 - **单二进制**: 跨平台单文件, 内嵌管理台, 桌面客户端 + CLI 双形态。
 
-## 演示 (62 秒)
+## 演示 (62 秒 · 女声讲解)
 
-https://github.com/MisakaMikoto128/serialhub/raw/main/docs/media/serialhub-demo.mp4
+[![SerialHub 演示视频](docs/media/serialhub-demo-cover.jpg)](docs/media/serialhub-demo.mp4)
 
-*女声讲解: 从建桥到网页收发串口数据的完整工作流。*
+*▲ 点击封面观看: 从建桥到网页收发串口数据的完整工作流。*
 
 ## 特性
 
