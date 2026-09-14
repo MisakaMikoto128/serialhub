@@ -41,7 +41,8 @@ const os = require("os");
 const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..");
-const EXE = path.join(ROOT, "target", "release", "serialhub.exe");
+/* SERIALHUB_EXE: 并行席位隔离口径 (与 tests/conftest.py 同名约定) —— 不设则用 target/release */
+const EXE = process.env.SERIALHUB_EXE || path.join(ROOT, "target", "release", "serialhub.exe");
 const ADDR = process.env.AUDIT_ADDR || "127.0.0.1:8080";
 const HOST = ADDR.split(":")[0];
 const PORT = Number(ADDR.split(":")[1]);

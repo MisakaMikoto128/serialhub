@@ -264,6 +264,7 @@ mod tests {
         let ctx = PortCtx {
             hub: hub.clone(),
             bc_tx: broadcast::channel(16).0,
+            tx_bc: broadcast::channel(16).0,
             tx_slot: Arc::new(StdMutex::new(None)),
             active_stop: Arc::new(StdMutex::new(None)),
         };

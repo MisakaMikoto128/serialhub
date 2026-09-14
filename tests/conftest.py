@@ -468,9 +468,15 @@ def join_collectors(th: threading.Thread, box: dict, timeout: float = 60.0):
 # 新增的强制回显字段; retries 为 ADR-15① (Sprint 5 契约随动修订 2026-09-13, 13→14 字段);
 # autoReconnect 为 ADR-16① (Sprint 6 契约随动修订 2026-09-13, 14→15 字段, 默认 true)。
 # 波1 任务速记 "rx/tx" 与实现分歧, 修订记录见 qa-sprint4.md。
+# Sprint 13 契约随动修订 (QA 2026-09-15 实测 21 键, 15→17→19→21 演进):
+#   + autoOpen/running (Sprint 8 起回显) + recording/replay (FR-19, 15→17) +
+#   + forwardTcp/forwardConnected (FR-20, →19/21 视计数口径; 探针实测含 id 共 21 键)。
+#   类型契约见 assert_row_shape。
 FLEET_ROW_FIELDS = {"id", "name", "serial", "listen", "phase", "clients",
                     "rxBytes", "txBytes", "rxRate", "txRate", "lastError",
-                    "uptimeSec", "maxClients", "retries", "autoReconnect"}
+                    "uptimeSec", "maxClients", "retries", "autoReconnect",
+                    "autoOpen", "running", "recording", "replay",
+                    "forwardTcp", "forwardConnected"}
 
 
 def serial_port_of(row: dict):
@@ -671,6 +677,13 @@ def assert_row_shape(row: dict) -> None:
     if "autoReconnect" in row:
         assert isinstance(row["autoReconnect"], bool), \
             f"autoReconnect 应为布尔 (ADR-16①): {row['autoReconnect']!r}"
+    # Sprint 13 新增字段类型契约 (ADR-24⑤⑥, QA 2026-09-15 实测随动):
+    for k in ("autoOpen", "running", "forwardConnected"):
+        assert isinstance(row[k], bool), f"{k} 应为布尔: {row[k]!r}"
+    assert isinstance(row["forwardTcp"], str), f"forwardTcp 应为字符串 (空串=关): {row['forwardTcp']!r}"
+    for k in ("recording", "replay"):
+        assert row[k] is None or isinstance(row[k], dict), \
+            f"{k} 应为 null 或状态对象: {row[k]!r}"
     assert row["phase"] in {"closed", "opening", "open", "retry"}, \
         f"phase 越出 FR-3 状态机: {row['phase']!r}"
     assert row["lastError"] is None or isinstance(row["lastError"], str), \
@@ -843,6 +856,109 @@ def start_fleet():
     for b in started:
         b.stop()
     kill_all_bridges()   # 双保险: 不得残留占 COM1/COM2 的进程
+
+
+# ==================================================================
+# FR-19 / FR-22 扩展区 (Sprint 13 批次 B, ADR-24⑤) —— 纯新增, 不影响上方夹具
+# ==================================================================
+
+def recordings_dir() -> Path:
+    """FR-19 契约位置: 录像文件存 exe 旁 recordings/ 目录 (spec FR-19)。"""
+    return BRIDGE_EXE.parent / "recordings"
+
+
+def list_recordings() -> set:
+    """recordings/ 下现有文件名集合 (目录不存在 = 空集); 供录制前后 diff 定位新录像。"""
+    d = recordings_dir()
+    if not d.is_dir():
+        return set()
+    return {p.name for p in d.iterdir() if p.is_file()}
+
+
+def delete_recordings(names) -> None:
+    """删除指定录像文件 (测试卫生: 套件自产自清, 不残留)。"""
+    for n in names:
+        try:
+            (recordings_dir() / n).unlink()
+        except OSError:
+            pass
+
+
+def post_accepted(code: int, body, what: str) -> None:
+    """FR-19/22 受理判据: 2xx 全档且非 {ok:false} (沿 ADR-5③ 家族口径放宽到 2xx)。"""
+    assert 200 <= code < 300 and not (isinstance(body, dict) and body.get("ok") is False), \
+        f"POST {what} -> {code}: {str(body)[:300]!r}"
+
+
+def _fleet_probe(fdir: Path) -> Bridge:
+    """FR-19/22 门控探针进程: --headless --addr 自由端口 --fleet 临时清单, 等 HTTP 就绪。"""
+    http_port = free_tcp_port()
+    cmd = [str(BRIDGE_EXE), "--headless", "--addr", f"{HTTP_HOST}:{http_port}",
+           "--fleet", str(fdir / "fleet.json")]
+    lf = open(fdir / "probe.log", "w", encoding="utf-8")
+    proc = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT)
+    b = Bridge(proc, http_port, fdir / "probe.log")
+    b._log_handle = lf
+    b.wait_http_ready(15)
+    return b
+
+
+@pytest.fixture(scope="session")
+def fr19_ready():
+    """FR-19 录制/回放后端就绪探针 (会话级一次): 临时 fleet 进程上建桥 (不 start,
+    不占串口), POST /api/fleet/<id>/record/start 404 → 整组跳过 [BLOCKED-BY-BACKEND]。
+
+    不改任何预期 —— 只区分"实现未到位"与"实现违约"; 未实现时路由不存在, 对 closed
+    桥同样 404 (与桥状态无关), 故门控零串口依赖 (并行席位占 COM1 时也稳定跳过)。
+    dev-backend 落地后本探针放行, 套件即书即跑。探针自产录像文件在 finally 清光。
+    """
+    kill_all_bridges()
+    fdir = Path(tempfile.mkdtemp(prefix="serialhub_fr19_probe_"))
+    created: set = set()
+    b = None
+    try:
+        b = _fleet_probe(fdir)
+        fleet_purge(b)
+        listen = take_port(18209)
+        code, resp = fleet_create(b, "qa-fr19-probe", BRIDGE_COM, listen)
+        assert code in (200, 201) and not (isinstance(resp, dict) and resp.get("ok") is False), \
+            f"FR-19 探针建桥失败: {code}: {resp!r}"
+        bid = fleet_new_id(b, resp, listen)   # 不 start: 404 探测不需要桥 open
+        before = list_recordings()
+        code, body = b.post(f"/api/fleet/{bid}/record/start", {})
+        if code == 404:
+            pytest.skip(
+                "[BLOCKED-BY-BACKEND] FR-19 录制/回放未实现: "
+                f"POST /api/fleet/<id>/record/start -> 404 (探针日志: {fdir / 'probe.log'})")
+        if 200 <= code < 300:
+            b.post(f"/api/fleet/{bid}/record/stop", {})
+            time.sleep(0.4)
+            created = list_recordings() - before
+    finally:
+        if b is not None:
+            b.stop()
+        kill_all_bridges()
+        delete_recordings(created)
+
+
+@pytest.fixture(scope="session")
+def fr22_ready():
+    """FR-22 导入导出后端就绪探针 (会话级一次): GET /api/fleet/export 404 → 整组跳过
+    [BLOCKED-BY-BACKEND]。落地即放行, 套件即书即跑。"""
+    kill_all_bridges()
+    fdir = Path(tempfile.mkdtemp(prefix="serialhub_fr22_probe_"))
+    b = None
+    try:
+        b = _fleet_probe(fdir)
+        code, body = b.get("/api/fleet/export")
+        if code == 404:
+            pytest.skip(
+                "[BLOCKED-BY-BACKEND] FR-22 导入导出未实现: "
+                f"GET /api/fleet/export -> 404 (探针日志: {fdir / 'probe.log'})")
+    finally:
+        if b is not None:
+            b.stop()
+        kill_all_bridges()
 
 
 # ------------------------------------------------------------------ pytest 配置

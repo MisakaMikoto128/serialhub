@@ -318,6 +318,62 @@ dialog::backdrop{background:rgba(28,38,48,.4)}
 .dr-body{flex:1;overflow-y:auto;padding:var(--pad)}
 .dr-sec>h3{font-size:12px;margin:0 0 12px;padding:0;color:var(--muted);letter-spacing:2px;font-weight:600}
 
+/* ============ 录制与回放页签 (Sprint13 B1 / FR-19) ============ */
+.rec-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px}
+.rec-dot{width:10px;height:10px;border-radius:50%;background:var(--err);flex:none}
+.rec-hint{font-size:12px;color:var(--faint)}
+.rec-live,.rec-replay{display:none;align-items:center;gap:8px;font-size:12px;border-radius:var(--ctl-radius);
+  padding:8px 12px;margin-bottom:8px;word-break:break-all}
+.rec-live{color:var(--err-ink);background:var(--err-bg);border:1px solid var(--err)}
+.rec-replay{color:var(--tx);background:var(--panel-2);border:1px solid var(--tx)}
+.rec-live.show,.rec-replay.show{display:flex}
+.rec-live .dot,.rec-replay .dot{width:8px;height:8px;border-radius:50%;flex:none;animation:blink 1s steps(2,start) infinite}
+.rec-live .dot{background:var(--err)}
+.rec-replay .dot{background:var(--tx)}
+.rec-live b,.rec-replay b{font-family:var(--mono)}
+.rec-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  padding:8px 0;border-bottom:1px solid var(--border);margin-bottom:8px}
+.rec-tools .spacer{flex:1}
+.rec-tools .count{font-family:var(--mono);font-size:12px;color:var(--faint)}
+.rec-tools label{font-size:12px;color:var(--muted);white-space:nowrap}
+.rec-tools select{height:var(--ctl-h-sm)} /* 工具条行: 紧凑档 (UI-1) */
+.loopwrap{display:inline-flex;align-items:center;gap:6px}
+.rec-list{display:flex;flex-direction:column;gap:8px}
+.rec-row{display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:var(--ctl-radius);
+  background:var(--panel-2);padding:6px 12px;min-width:0}
+.rec-row .fname{font-family:var(--mono);font-size:12px;color:var(--ink);flex:1;min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rec-row .fmeta{font-size:12px;color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
+.rec-row button{height:var(--ctl-h-sm);flex:none} /* 行内小操作: 紧凑档 (UI-1) */
+.rec-empty{font-size:12px;color:var(--faint);padding:12px 0}
+
+/* 旁路转发 (Sprint13 B2 / FR-20): 抽屉状态行 + 卡片状态微标
+   (未配置不显示; 已配置 已连接=绿 / 未连接=琥珀, 颜色走状态令牌) */
+.fwd-stat{display:none;align-items:center;gap:6px;margin:-2px 0 8px 80px;font-size:12px;
+  color:var(--muted);word-break:break-all}
+.fwd-stat.show{display:flex}
+.fwd-stat .fdot{width:8px;height:8px;border-radius:50%;flex:none}
+.fwd-stat.ok{color:var(--ok-ink)}
+.fwd-stat.ok .fdot{background:var(--ok)}
+.fwd-stat.off{color:var(--warn-ink)}
+.fwd-stat.off .fdot{background:var(--warn)}
+.fwd-stat b{font-family:var(--mono)}
+.mini.fwdstat b{color:var(--gray-ink)}
+.mini.fwdstat.ok b{color:var(--ok-ink)}
+.mini.fwdstat.off b{color:var(--warn-ink)}
+.mini.fwdstat[hidden]{display:none} /* .mini 自带 inline-flex, 显式压住 hidden */
+
+/* 设置弹窗: 配置导出/导入 (Sprint13 B4 / FR-22) */
+.imp-panel{display:none;border:1px solid var(--border-strong);border-radius:var(--ctl-radius);
+  background:var(--panel-2);padding:8px 12px;margin-top:8px}
+.imp-panel.show{display:block}
+.imp-panel>div:first-child{font-size:12px;color:var(--muted);word-break:break-all}
+.imp-panel code{font-family:var(--mono);font-size:12px;color:var(--ink)}
+.imp-btns{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+.imp-warn{display:none;margin-top:8px;font-size:12px;color:var(--err-ink);background:var(--err-bg);
+  border:1px solid var(--err);border-radius:var(--ctl-radius);padding:6px 12px}
+.imp-warn.show{display:block}
+
 footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--faint);font-size:12px}
 
 /* 720px 窄屏 (UI-1): 无横向滚动 */
@@ -329,6 +385,7 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
   header{padding:8px 12px}
   .field>label{width:60px}
   .ferr{margin-left:68px}
+  .fwd-stat{margin-left:68px}
   #drawer{width:100vw}
   .node b{max-width:96px}
   .wire{width:30px}
@@ -468,6 +525,24 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
     </div>
     <div class="ferr" id="setErrAddr" hidden></div>
     <div class="send-hint">改的是管理台自己的网址: 串口不受影响, 本页将自动跳到新网址, 重启后仍用新网址。</div>
+    <div class="field">
+      <label>配置备份</label>
+      <div class="ctl">
+        <button id="btnCfgExport" type="button" title="把全部桥的设置下载成一个 fleet.json 文件">导出配置</button>
+        <button id="btnCfgImport" type="button" title="选以前导出的 fleet.json, 把桥恢复回来">导入配置</button>
+        <input id="cfgImportFile" type="file" accept=".json,application/json" hidden />
+      </div>
+    </div>
+    <div class="send-hint">导出: 全部桥的设置存成一个文件, 换电脑迁移用; 导入: 选以前导出的文件把桥恢复回来。</div>
+    <div id="impPanel" class="imp-panel">
+      <div>已选 <code id="impFileName">—</code></div>
+      <div class="imp-btns">
+        <button id="btnImpMerge" type="button" title="现有的桥都保留, 文件里的桥加进来; 名字或网址相同的会跳过">合并导入</button>
+        <button id="btnImpReplace" type="button" class="danger" title="先删掉现在所有的桥, 再按文件重建">替换导入</button>
+      </div>
+      <div id="impWarn" class="imp-warn" role="alert">替换导入会把现在所有的桥全部删掉再按文件重建 — 现有桥配置将被全部替换, 已连的网页会断开。</div>
+      <div id="setErrCfg" class="form-err"></div>
+    </div>
     <div id="setErr" class="form-err"></div>
   </div>
   <div class="dlg-foot">
@@ -510,6 +585,7 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
         <b class="v-tx">0 B/s</b></span>
       <span class="mini">连接 <b class="v-clients">0</b></span>
       <span class="mini">运行 <b class="v-up">0:00:00</b></span>
+      <span class="mini fwdstat" hidden>转发 <b class="v-fwd"></b></span>
     </div>
     <div class="berr"></div>
   </article>
@@ -530,6 +606,7 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
   <div class="dr-tabs" role="tablist" aria-label="桥管理" data-strip>
     <button id="tb-cfg" type="button" role="tab" aria-selected="true" aria-controls="pan-cfg">设置</button>
     <button id="tb-tap" type="button" role="tab" aria-selected="false" aria-controls="pan-tap">串口数据</button>
+    <button id="tb-rec" type="button" role="tab" aria-selected="false" aria-controls="pan-rec">录制</button>
     <button id="tb-stats" type="button" role="tab" aria-selected="false" aria-controls="pan-stats">统计</button>
   </div>
   <div class="dr-body">
@@ -590,6 +667,14 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
           <button id="btnCfCopyUrl" type="button" class="copy-ghost" title="复制" aria-label="复制数据网址给网页/程序"></button></div>
       </div>
       <div class="send-hint">网页/程序打开「数据网址」就能连到这个串口; 同一串口同时只归一座桥</div>
+      <div class="field">
+        <label for="cfForward">旁路转发</label>
+        <div class="ctl"><input id="cfForward" type="text" placeholder="留空 = 不转发; 例: 192.168.1.20:9000"
+          title="旁路转发 (TCP): 把串口收到的数据同步转发给这个地址" /></div>
+      </div>
+      <div class="ferr" id="cfErrForward" hidden></div>
+      <div class="send-hint">把串口收到的数据同步转发给这个 TCP 地址 (只出不进, 自动重连); 留空 = 关闭转发</div>
+      <div id="cfFwdStat" class="fwd-stat" role="status"></div>
       <div id="cfLockHint" class="lock-hint"></div>
       <div id="cfErr" class="form-err"></div>
       <details class="equiv">
@@ -619,6 +704,35 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
       </div>
       <div id="term" aria-live="off"><div class="empty">还没有数据 — 串口一有动静就会显示在这里</div></div>
       <div class="send-hint" id="tapHint">这里只是旁看; 想发数据, 请用连在这座桥上的网页/程序。</div>
+    </section>
+
+    <section id="pan-rec" role="tabpanel" aria-labelledby="tb-rec" class="dr-sec" hidden>
+      <h3>录 制 与 回 放</h3>
+      <div class="rec-actions">
+        <button id="btnRec" type="button" title="把这座桥收发的数据原样存成录像文件">
+          <span class="rec-dot" aria-hidden="true"></span><span id="btnRecText">开始录制</span></button>
+        <span class="rec-hint" id="recHint">录制会原样存下这座桥收发的每个字节; 以后可按选定速度回放给串口</span>
+      </div>
+      <div id="recLive" class="rec-live" role="status"><span class="dot" aria-hidden="true"></span><span id="recLiveText"></span></div>
+      <div id="recReplay" class="rec-replay" role="status"><span class="dot" aria-hidden="true"></span><span id="recReplayText"></span></div>
+      <div class="rec-tools">
+        <span class="count" id="recCount">录像 (0)</span>
+        <span class="spacer"></span>
+        <label for="recSpeed">回放速度</label>
+        <select id="recSpeed" title="回放时按几倍速度把录像发给串口">
+          <option value="0.5">0.5 倍 (慢)</option>
+          <option value="1" selected>1 倍 (原速)</option>
+          <option value="2">2 倍</option>
+          <option value="5">5 倍</option>
+        </select>
+        <span class="loopwrap">
+          <input id="recLoop" type="checkbox" class="switch" role="switch" aria-label="循环回放"
+            title="回放到结尾后自动从头再来" />
+          <label for="recLoop" class="switch-track" title="回放到结尾后自动从头再来"></label>
+          <label for="recLoop">循环</label>
+        </span>
+      </div>
+      <div id="recList" class="rec-list"></div>
     </section>
 
     <section id="pan-stats" role="tabpanel" aria-labelledby="tb-stats" class="dr-sec" hidden>
@@ -841,6 +955,8 @@ function buildCard(id) {
     sTx: root.querySelector(".spark-tx"),
     clients: root.querySelector(".v-clients"),
     up: root.querySelector(".v-up"),
+    fwd: root.querySelector(".fwdstat"),
+    vFwd: root.querySelector(".v-fwd"),
     err: root.querySelector(".berr"),
   };
   els.name.addEventListener("click", () => openDrawer(id, els.cfgBtn));
@@ -889,6 +1005,18 @@ function updateCard(els, b) {
   els.sTx.innerHTML = sparkSvg(h.tx, C_TX);
   els.clients.textContent = fmtBytes(b.clients);
   els.up.textContent = fmtUptime(b.uptimeSec);
+  /* B2 旁路转发状态 (FR-20): 未配置不显示; 已配置 已连接=绿 / 未连接=琥珀 */
+  const fwdCfgd = typeof b.forwardTcp === "string" && b.forwardTcp !== "";
+  els.fwd.hidden = !fwdCfgd;
+  if (fwdCfgd) {
+    const fon = b.forwardConnected === true;
+    els.fwd.classList.toggle("ok", fon);
+    els.fwd.classList.toggle("off", !fon);
+    els.vFwd.textContent = fon ? "已连接" : "未连接";
+    els.fwd.title = fon
+      ? "旁路转发: 正在把串口收到的数据转发给 " + b.forwardTcp
+      : "旁路转发目标 " + b.forwardTcp + " 暂时没连上, 会自动重连";
+  }
   /* 错误行四态 (ADR-15②/FR-12): retry 大白话 / 重连已关停机 / 恢复窗口 / 常规上次出错 */
   const rec = recoveries.get(b.id);
   const stoppedByAutoOff = autoOff &&
@@ -931,6 +1059,9 @@ function syncCards() {
       e.root.remove(); cards.delete(id); hist.delete(id);
       clearTimeout(recTimers.get(id)); recTimers.delete(id);
       recoveries.delete(id); wasRetry.delete(id);
+      recActive.delete(id); /* 桥没了: 录制/回放的本地跟踪一并清掉 */
+      replaying.delete(id);
+      clearTimeout(replayTimers.get(id)); replayTimers.delete(id);
       if (drawerId === id) { closeDrawer(); notice("这座桥已被删除", "err"); }
     }
   }
@@ -1083,6 +1214,21 @@ function validateListen(input) {
   if (!/^[0-9a-zA-Z.:\[\]-]+:[0-9]+$/.test(raw)) {
     input.classList.add("invalid");
     return { err: "网址要写成 IP:端口, 例如 127.0.0.1:9001" };
+  }
+  input.classList.remove("invalid");
+  return { val: raw };
+}
+/* B2 旁路转发地址校验 (FR-20, 与后端同口径): 空=关; 非空须 host:port、host 非空、
+   端口 1~65535、无空白 (不做 DNS 预解析, 连不上由桥自动重连兜底) */
+function validateForward(input) {
+  const raw = String(input.value).trim();
+  if (!raw) { input.classList.remove("invalid"); return { val: "" }; }
+  const ci = raw.lastIndexOf(":");
+  const host = ci > 0 ? raw.slice(0, ci) : "";
+  const port = ci > 0 ? raw.slice(ci + 1) : "";
+  if (!host || /\s/.test(raw) || !/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) {
+    input.classList.add("invalid");
+    return { err: "地址要写成 主机:端口, 例如 192.168.1.20:9000; 端口要填 1 ~ 65535 的数字" };
   }
   input.classList.remove("invalid");
   return { val: raw };
@@ -1404,7 +1550,7 @@ enhanceBaudInput($("cfBaud"));
 
 /* ================= 每桥抽屉 ================= */
 const drawer = $("drawer"), mask = $("mask");
-const TABS = ["cfg", "tap", "stats"];
+const TABS = ["cfg", "tap", "rec", "stats"];
 
 function fillCfg(b) {
   $("cfName").value = b.name || "";
@@ -1419,6 +1565,9 @@ function fillCfg(b) {
   /* 契约注: fleet 列表暂无 maxClients 回显字段, 缺省按 0 (不限) 显示 —— 见报告 SPEC-QUESTION */
   $("cfMax").value = typeof b.maxClients === "number" ? b.maxClients : 0;
   $("cfAuto").checked = b.autoReconnect !== false; /* FR-12: 缺省按开显示 (契约默认 true) */
+  $("cfForward").value = typeof b.forwardTcp === "string" ? b.forwardTcp : ""; /* B2: 空串=关 */
+  $("cfForward").classList.remove("invalid");
+  const ferr = $("cfErrForward"); ferr.hidden = true; ferr.textContent = "";
   $("cfErr").classList.remove("show");
   updateCfDerived();
 }
@@ -1454,11 +1603,22 @@ async function saveCfg() {
     cfgErr("这座桥的数据网址建好就不能改; 要换端口请删除这座桥再新建");
     return;
   }
+  /* B2 旁路转发: 就地红字校验 (.ferr 模式); 每次保存显式携带 (空串=关) ——
+     后端对 forwardTcp 缺省不改、热生效, 停止中改配则 start 按新值起会话 */
+  const fwd = validateForward($("cfForward"));
+  if (fwd.err) {
+    const fe = $("cfErrForward");
+    fe.textContent = fwd.err; fe.hidden = false;
+    $("cfForward").focus();
+    return;
+  }
+  const ferr = $("cfErrForward"); ferr.hidden = true; ferr.textContent = "";
   /* F3 流程糖: 打开抽屉时桥在运行 → 保存 = 停止→应用→启动一次完成 (UI 代跑,
      数据面契约不变: 仍是 close→config→open); 原本停止 → 照旧只保存, 手动启动 */
   const restart = drawerRunAtOpen;
   const body = { name };
   body.autoReconnect = $("cfAuto").checked; /* FR-12: 随每次保存显式携带 (缺省 true) */
+  body.forwardTcp = fwd.val; /* B2: 同上, 空串=关闭转发 (后端缺省不改, 所以必须显式送) */
   if (b.phase === "closed" || restart) {
     const port = $("cfPort").value;
     const baud = validateBaud($("cfBaud"));
@@ -1477,7 +1637,7 @@ async function saveCfg() {
   cfgSaving = true;
   const btn = $("btnCfSave");
   btn.disabled = true;
-  ["cfPort", "btnCfScan", "cfBaud", "cfData", "cfParity", "cfStop", "cfFlow", "cfListen", "cfMax", "cfAuto"]
+  ["cfPort", "btnCfScan", "cfBaud", "cfData", "cfParity", "cfStop", "cfFlow", "cfListen", "cfMax", "cfAuto", "cfForward"]
     .forEach((id) => { $(id).disabled = true; }); /* 在途冻结: 防半程轮询解锁被编辑 */
   try {
     if (restart) {
@@ -1519,6 +1679,9 @@ function openDrawer(id, opener) {
 }
 function closeDrawer() {
   drawer.hidden = true; mask.hidden = true;
+  /* 回放状态只在抽屉里展示; 关抽屉即收 (录制是长活的, recActive 保留计时) */
+  replaying.delete(drawerId);
+  clearTimeout(replayTimers.get(drawerId)); replayTimers.delete(drawerId);
   drawerId = null;
   disconnectTap();
   if (lastFocus && lastFocus.isConnected) lastFocus.focus();
@@ -1548,6 +1711,7 @@ function switchTab(name) {
   }
   if (name === "tap") { tapWant = true; connectTap(); }
   else disconnectTap();
+  if (name === "rec") refreshRecordings(); /* B1: 进录制页签就拉一次录像列表 */
 }
 /* 标签页切换: 点击 + 左右方向键 (键盘可达) */
 for (let i = 0; i < TABS.length; i++) {
@@ -1586,19 +1750,38 @@ function syncDrawerLive() {
   $("sparkBigRx").innerHTML = sparkSvgWide((hist.get(b.id) || { rx: [] }).rx, C_RX, 300, 40);
   $("sparkBigTx").innerHTML = sparkSvgWide((hist.get(b.id) || { tx: [] }).tx, C_TX, 300, 40);
   const fl = b.serial && b.serial.flow;
+  /* B2 旁路转发 (FR-20): forwardTcp 非空 = 已配置; forwardConnected = TCP 当前连着 */
+  const fwdCfgd = typeof b.forwardTcp === "string" && b.forwardTcp !== "";
   /* 波3 (UX P2-2): 校验位缺记录时给带标签的占位话术, 不再裸 "--" (UI-0: 不看文档猜得出) */
   $("stParam").innerHTML =
     "串口 <b>" + esc((b.serial && b.serial.port) || "—") + "</b> · <b>" + esc(String((b.serial && b.serial.baud) || "—")) +
     "</b> · " + ((b.serial && b.serial.config) ? "校验 <b>" + esc(String(b.serial.config)) + "</b>" : "<b>校验 未记录</b>") +
     " · 流控 <b>" + esc(FLOW_TEXT[fl] || fl || "—") +
-    "</b> · 网址 <b>" + esc(b.listen || "—") + "</b>";
+    "</b> · 网址 <b>" + esc(b.listen || "—") + "</b>" +
+    (fwdCfgd ? " · 旁路转发 <b>" + esc(b.forwardTcp) + "</b> (" + (b.forwardConnected ? "已连接" : "未连接") + ")" : "");
   if (b.lastError) { $("stErr").textContent = "上次出错: " + b.lastError; $("stErr").classList.add("show"); }
   else { $("stErr").classList.remove("show"); $("stErr").textContent = ""; }
-  /* 设置页: 串口打开期间锁定参数 (热改需先停止), 名称除外; cfAuto 同锁 (改配与串口参数同一时机)。
+  /* B2 旁路转发状态行 (FR-20): 未配置不显示; 已配置按 forwardConnected 显 已连接/未连接 */
+  const fstat = $("cfFwdStat");
+  fstat.hidden = !fwdCfgd;
+  fstat.classList.toggle("show", fwdCfgd);
+  if (fwdCfgd) {
+    const fon = b.forwardConnected === true;
+    fstat.classList.toggle("ok", fon);
+    fstat.classList.toggle("off", !fon);
+    fstat.innerHTML = '<span class="fdot" aria-hidden="true"></span>' + (fon
+      ? "转发已连接 — 正在把串口收到的数据发给 <b>" + esc(b.forwardTcp) + "</b>"
+      : (b.phase === "open"
+        ? "转发未连接 — 会自动重连, 请检查 <b>" + esc(b.forwardTcp) + "</b> 那头的服务开没开"
+        : "转发已配置 — 这座桥启动后开始转发"));
+  }
+  /* 设置页: 串口打开期间锁定参数 (热改需先停止), 名称除外; cfAuto 同锁 (改配与串口参数同一时机);
+     cfForward 同锁 —— B2 口径: 改转发与改串口参数同一时机, 停止→编辑→「保存并启动」一次完成
+     (后端的运行中热生效留给 CLI 等直发 config 的场景, UI 不另开捷径)。
      F3: 停→存→启在途 (cfgSaving) 时冻结锁定态 —— 半程 phase=closed 的轮询不得解锁 */
   if (cfgSaving) return;
   const locked = b.phase !== "closed";
-  ["cfPort", "btnCfScan", "cfBaud", "cfData", "cfParity", "cfStop", "cfFlow", "cfListen", "cfMax", "cfAuto", "btnCfSave"]
+  ["cfPort", "btnCfScan", "cfBaud", "cfData", "cfParity", "cfStop", "cfFlow", "cfListen", "cfMax", "cfAuto", "cfForward", "btnCfSave"]
     .forEach((id) => { $(id).disabled = locked; });
   const hint = $("cfLockHint");
   if (locked) {
@@ -1625,6 +1808,200 @@ function sparkSvgWide(vals, color, w, h) {
 }
 function esc(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+/* ================= 录制与回放 (FR-19 / Sprint13 B1) =================
+   录制/回放本体在后端 (tap 通道 tee 落盘 JSONL / 按原始时序写回串口 TX), UI 管状态:
+   - 录制中: 本地跟踪 (startTs 起表计时); 帧数/字节从 recordings 列表回读 ——
+     后端若对录制中的文件即时回填即实时显示, 未回填则显示「停止后统计」不谎报 0;
+   - 回放中: 发起成功即亮进行中状态, 非循环按 录像时长/倍速 自动收点;
+     循环回放没有已知终点, 状态保持到关抽屉 (契约缺口见报告 SPEC-Q1/Q2)。 */
+const recActive = new Map();    /* id → {file,startTs,frames,bytes} */
+const replaying = new Map();    /* id → {file,speed,loop,startTs,durSec} */
+const replayTimers = new Map(); /* id → 回放自动收点定时器 */
+let recCache = [];              /* 当前抽屉桥的录像列表缓存 */
+let recListErr = null;          /* 列表取不到时的原话 (给可行动话术用) */
+let recBusy = false;            /* 开始/停止录制在途: 防连点 */
+let recPollAt = 0;              /* 录制中列表轮询节流 */
+
+function fmtDur(s) {
+  s = Math.max(0, Math.floor(Number(s) || 0));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+  return h > 0 ? h + ":" + String(m).padStart(2, "0") + ":" + String(ss).padStart(2, "0")
+               : m + ":" + String(ss).padStart(2, "0");
+}
+
+function syncRecUI() {
+  if (!drawerId) return;
+  const on = recActive.has(drawerId);
+  $("btnRec").classList.toggle("danger", on);
+  $("btnRecText").textContent = on ? "停止录制" : "开始录制";
+  $("btnRec").title = on ? "停止录制, 这段就存成文件了" : "把这座桥收发的数据原样存成录像文件";
+  $("recHint").textContent = on
+    ? "录像存在程序的 recordings 目录, 停止后出现在下面列表"
+    : "录制会原样存下这座桥收发的每个字节; 以后可按选定速度回放给串口";
+  $("recLive").classList.toggle("show", on);
+  if (on) updateRecLiveText();
+  const rp = replaying.get(drawerId);
+  $("recReplay").classList.toggle("show", !!rp);
+  if (rp) updateReplayText();
+  renderRecList();
+  if (window.__sh) window.__sh.rec = { /* QA 观测口 */
+    recording: on,
+    file: on ? recActive.get(drawerId).file : null,
+    replaying: rp ? { file: rp.file, speed: rp.speed, loop: rp.loop } : null,
+  };
+}
+function updateRecLiveText() {
+  const a = drawerId && recActive.get(drawerId);
+  if (!a) return;
+  const fr = Number.isFinite(Number(a.frames)) ? fmtBytes(a.frames) + " 帧" : null;
+  const by = Number.isFinite(Number(a.bytes)) ? fmtBytes(a.bytes) + " 字节" : null;
+  $("recLiveText").innerHTML = "录制中 · 已录 <b>" + esc(fmtDur((Date.now() - a.startTs) / 1000)) + "</b>" +
+    (fr ? " · <b>" + esc(fr) + "</b>" : "") + (by ? " · <b>" + esc(by) + "</b>" : " · 帧数字节在停止后统计");
+}
+function updateReplayText() {
+  const r = drawerId && replaying.get(drawerId);
+  if (!r) return;
+  $("recReplayText").innerHTML = "正在回放 <b>" + esc(r.file) + "</b> · " + esc(String(r.speed)) +
+    " 倍速 · 数据发给这座桥的串口" + (r.loop ? " · 循环开着, 回放会一直重复" : "");
+}
+function renderRecList() {
+  if (!drawerId) return;
+  const list = $("recList");
+  list.innerHTML = "";
+  $("recCount").textContent = "录像 (" + recCache.length + ")";
+  if (recListErr || !recCache.length) {
+    const d = document.createElement("div");
+    d.className = "rec-empty";
+    d.textContent = recListErr
+      ? "录像列表暂时取不到 (" + recListErr + ") — 稍后会自动重试"
+      : "还没有录像 — 点「开始录制」, 这座桥收发的数据就会存成文件";
+    list.appendChild(d);
+    return;
+  }
+  for (const r of recCache) {
+    const row = document.createElement("div");
+    row.className = "rec-row";
+    const nm = document.createElement("span");
+    nm.className = "fname";
+    nm.textContent = (r && r.file) || "(未命名)";
+    nm.title = (r && r.file) || "";
+    const meta = document.createElement("span");
+    meta.className = "fmeta";
+    meta.textContent = (r && r.durationSec != null ? fmtDur(r.durationSec) : "时长 —") +
+      " · " + fmtBytes(r && r.bytes) + " 字节";
+    const play = document.createElement("button");
+    play.type = "button"; play.textContent = "回放";
+    play.title = "按上面选的速度把这段录像原样发给串口";
+    play.addEventListener("click", () => startReplay(drawerId, r.file));
+    const del = document.createElement("button");
+    del.type = "button"; del.className = "danger"; del.textContent = "删除";
+    del.title = "删掉这个录像文件 (桥删了录像也还在这里)";
+    del.addEventListener("click", () => armDelRec(del, r.file));
+    row.append(nm, meta, play, del);
+    list.appendChild(row);
+  }
+}
+async function refreshRecordings() {
+  if (!drawerId) return;
+  const id = drawerId;
+  try {
+    const j = await api("/api/fleet/" + encodeURIComponent(id) + "/recordings");
+    if (drawerId !== id) return;
+    recCache = Array.isArray(j.recordings) ? j.recordings : [];
+    recListErr = null;
+    const a = recActive.get(id); /* 录制中: 顺手回读实时帧数/字节 (后端若回填) */
+    if (a) {
+      const cur = recCache.find((r) => r && r.file === a.file);
+      if (cur) {
+        if (Number.isFinite(Number(cur.frames))) a.frames = Number(cur.frames);
+        if (Number.isFinite(Number(cur.bytes))) a.bytes = Number(cur.bytes);
+        updateRecLiveText();
+      }
+    }
+  } catch (e) {
+    if (drawerId !== id) return;
+    recCache = []; recListErr = e.message;
+  }
+  if (drawerId === id) renderRecList();
+}
+async function toggleRecord() {
+  if (!drawerId || recBusy) return;
+  const id = drawerId;
+  recBusy = true;
+  const btn = $("btnRec");
+  btn.disabled = true;
+  const stopping = recActive.has(id);
+  try {
+    if (stopping) {
+      const a = recActive.get(id);
+      const j = await api("/api/fleet/" + encodeURIComponent(id) + "/record/stop", {});
+      recActive.delete(id);
+      notice("录制完成: " + ((j && j.file) || a.file || "") +
+        " (" + fmtBytes(j && j.frames) + " 帧 / " + fmtBytes(j && j.bytes) + " 字节)", "ok");
+      await refreshRecordings();
+    } else {
+      const j = await api("/api/fleet/" + encodeURIComponent(id) + "/record/start", {});
+      recActive.set(id, { file: (j && j.file) || "", startTs: Date.now(), frames: NaN, bytes: NaN });
+      recPollAt = 0;
+      notice("开始录制: " + ((j && j.file) || "") + " — 再点一次「停止录制」结束", "ok");
+    }
+  } catch (e) {
+    notice((stopping ? "停止录制" : "开始录制") + "没成功: " + e.message +
+      (stopping ? " — 再点一次「停止录制」试试" : " — 确认这座桥在运行, 再点一次「开始录制」"), "err");
+  }
+  recBusy = false;
+  btn.disabled = false;
+  if (drawerId === id) syncRecUI();
+}
+async function startReplay(id, file) {
+  const speed = parseFloat($("recSpeed").value) || 1;
+  const loop = $("recLoop").checked;
+  try {
+    await api("/api/fleet/" + encodeURIComponent(id) + "/replay", { file, speed, loop });
+    const entry = recCache.find((x) => x && x.file === file);
+    const st = { file, speed, loop, startTs: Date.now(), durSec: entry ? Number(entry.durationSec) : NaN };
+    replaying.set(id, st);
+    clearTimeout(replayTimers.get(id));
+    if (!loop && Number.isFinite(st.durSec)) { /* 非循环: 按时长/倍速自动收进行状态 */
+      replayTimers.set(id, setTimeout(() => {
+        replaying.delete(id); replayTimers.delete(id);
+        if (drawerId === id) syncRecUI();
+      }, (st.durSec / speed) * 1000 + 1500));
+    }
+    if (drawerId === id) syncRecUI();
+    notice("回放开始: " + file + " (" + speed + " 倍速" + (loop ? ", 循环" : "") + ") — 数据会发到这座桥的串口", "ok");
+  } catch (e) {
+    notice("回放没发出去: " + e.message + " — 桥要先「启动」着, 再点一次「回放」", "err");
+  }
+}
+function armDelRec(btn, file) {
+  if (btn.dataset.armed !== "1") {
+    btn.dataset.armed = "1"; btn.textContent = "确认删除?"; btn.classList.add("armed");
+    setTimeout(() => {
+      if (btn.isConnected && btn.dataset.armed === "1") {
+        btn.dataset.armed = "0"; btn.textContent = "删除"; btn.classList.remove("armed");
+      }
+    }, 3000);
+    return;
+  }
+  btn.dataset.armed = "0"; btn.disabled = true;
+  api("/api/fleet/" + encodeURIComponent(drawerId) + "/recordings/delete", { file })
+    .then(() => { notice("已删除录像: " + file, "ok"); })
+    .catch((e) => { notice("删除没成功: " + e.message + " — 稍后再试一次", "err"); btn.disabled = false; })
+    .finally(() => { btn.textContent = "删除"; btn.classList.remove("armed"); refreshRecordings(); });
+}
+function recTick() { /* 1s 节拍: 计时文字走这里, 不整列重绘 */
+  if (!drawerId) return;
+  if (recActive.has(drawerId)) {
+    updateRecLiveText();
+    if (activeTab === "rec" && Date.now() - recPollAt > 2000) {
+      recPollAt = Date.now();
+      refreshRecordings(); /* 录制中: 兜住后端即时回填帧数/字节的路径 */
+    }
+  }
+  if (replaying.has(drawerId)) updateReplayText();
 }
 
 /* ================= 侦听终端 (FR-10e: 只读旁看串口流) =================
@@ -1937,6 +2314,7 @@ function syncApplyBtn() {
 }
 function openSettings() {
   setErr(null); setFieldErr(null);
+  impReset(); /* B4: 每次打开设置, 导入面板从干净状态开始 */
   $("setAddr").classList.remove("invalid");
   $("setAddr").value = managerAddr;
   fillThemeSelect([]);                /* 先摆当前主题, 列表异步补齐 */
@@ -2002,6 +2380,116 @@ function followNewAddr(newAddr) {
   });
 }
 
+/* ================= 配置导出/导入 (FR-22 / Sprint13 B4) =================
+   导出 = fleet.json 原样下载: 契约口径 POST /api/fleet/export, 老实现若只挂 GET
+   自动退回 GET (两种都转 blob 触发浏览器下载, 文件名固定 fleet.json)。
+   导入 = 选文件 → 前端先校验 (JSON/含 bridges) → 合并/替换两枚钮各带两段确认
+   (替换额外亮红色警告) → POST /api/fleet/import {mode,json} → 结果大白话播报。 */
+let impJson = null, impArm = null, impArmTimer = null;
+function impErr(msg) {
+  const el = $("setErrCfg");
+  if (msg) { el.textContent = msg; el.classList.add("show"); }
+  else el.classList.remove("show");
+}
+function impDisarm() {
+  impArm = null;
+  if (impArmTimer) { clearTimeout(impArmTimer); impArmTimer = null; }
+  const m = $("btnImpMerge"), r = $("btnImpReplace");
+  m.textContent = "合并导入"; r.textContent = "替换导入";
+  m.classList.remove("armed"); r.classList.remove("armed");
+  $("impWarn").classList.remove("show");
+}
+function impReset() {
+  impJson = null; impDisarm();
+  $("impPanel").classList.remove("show");
+  $("cfgImportFile").value = "";
+  impErr(null);
+}
+async function onImportFile(ev) {
+  const f = ev.target.files && ev.target.files[0];
+  if (!f) return;
+  impErr(null);
+  let j = null;
+  try { j = JSON.parse(await f.text()); }
+  catch (_) {
+    impErr("这个文件读不出配置 — 请选之前用「导出配置」下载的 fleet.json 文件");
+    ev.target.value = ""; return;
+  }
+  if (!j || typeof j !== "object" || !Array.isArray(j.bridges)) {
+    impErr("文件里没有桥的配置 — 请确认选的是「导出配置」下载的 fleet.json (这次选的是: " + f.name + ")");
+    ev.target.value = ""; return;
+  }
+  impJson = j;
+  impDisarm();
+  $("impFileName").textContent = f.name + " · 里面有 " + j.bridges.length + " 座桥";
+  $("impPanel").classList.add("show");
+}
+function pickNum(j, keys) {
+  if (!j || typeof j !== "object") return null;
+  for (const k of keys) { const v = Number(j[k]); if (Number.isFinite(v)) return v; }
+  return null;
+}
+async function doImport(mode) {
+  if (!impJson) return;
+  const btn = mode === "merge" ? $("btnImpMerge") : $("btnImpReplace");
+  if (impArm !== mode) { /* 两段确认: 首点亮警告+预告后果, 3s 不确认自动复原 */
+    impDisarm(); impArm = mode;
+    btn.textContent = mode === "merge" ? "确认合并导入?" : "确认替换导入?";
+    btn.classList.add("armed");
+    if (mode === "replace") $("impWarn").classList.add("show");
+    notice(mode === "merge"
+      ? "合并导入: 现有的桥都保留, 文件里的桥加进来 (名字或网址相同的会跳过)。再点一次「确认合并导入?」。"
+      : "替换导入: 现在所有的桥会先全部删掉再按文件重建 — 现有桥配置将被全部替换。再点一次「确认替换导入?」。", "err");
+    impArmTimer = setTimeout(impDisarm, 3000);
+    return;
+  }
+  clearTimeout(impArmTimer); impArm = null;
+  btn.disabled = true;
+  try {
+    const j = await api("/api/fleet/import", { mode, json: impJson });
+    const n = pickNum(j, ["imported", "importedCount", "added", "created"]);
+    const skip = pickNum(j, ["skipped", "skippedCount"]);
+    if (mode === "replace") {
+      notice("导入完成: 现有桥已全部替换" + (n != null ? ", 现在共 " + n + " 座桥" : "") + "; 本页马上刷新", "ok");
+    } else {
+      notice("导入完成: 新增 " + (n != null ? n : "若干") + " 座桥" +
+        (skip != null ? ", 跳过 " + skip + " 座 (名字或网址和现有桥相同)" : "") + "; 本页马上刷新", "ok");
+    }
+    impReset();
+    dlgSettings.close();
+    poll();
+  } catch (e) {
+    impErr("导入没成功: " + e.message + " — 确认文件是本程序「导出配置」下载的, 再试一次");
+  }
+  btn.disabled = false;
+}
+async function doExport() {
+  const btn = $("btnCfgExport");
+  btn.disabled = true;
+  const grab = (method) => fetch("/api/fleet/export",
+    method === "POST" ? { method: "POST" } : { method: "GET", cache: "no-store" })
+    .then(async (r) => {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const b = await r.blob();
+      if (!b.size) throw new Error("拿到的文件是空的");
+      return b;
+    });
+  try {
+    let blob;
+    try { blob = await grab("POST"); }      /* 契约口径 */
+    catch (_) { blob = await grab("GET"); } /* 兼容只挂 GET 的实现 */
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "fleet.json";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    notice("配置已导出为 fleet.json (在浏览器下载里) — 换电脑时在「设置 → 导入配置」选它恢复", "ok");
+  } catch (e) {
+    notice("导出没成功: " + e.message + " — 确认程序在运行, 稍后再点一次", "err");
+  }
+  btn.disabled = false;
+}
+
 /* ================= 事件绑定 ================= */
 $("btnNew").addEventListener("click", openNew);
 $("btnNew2").addEventListener("click", openNew);
@@ -2025,9 +2513,15 @@ $("btnCfScan").addEventListener("click", () => scanInto($("cfPort")));
 $("btnCfSave").addEventListener("click", saveCfg);
 $("drToggle").addEventListener("click", () => { if (drawerId) toggleBridge(drawerId); }); /* F3: 与卡片同一停/启路径 */
 ["cfBaud", "cfListen"].forEach((id) => $(id).addEventListener("input", () => { $(id).classList.remove("invalid"); updateCfDerived(); }));
+/* B2: 转发地址键入即撤红字 (与波特率/网址端口同款就地校验体验) */
+$("cfForward").addEventListener("input", () => {
+  $("cfForward").classList.remove("invalid");
+  const fe = $("cfErrForward"); fe.hidden = true; fe.textContent = "";
+});
 ["cfData", "cfParity", "cfStop", "cfFlow", "cfMax", "cfPort", "cfAuto"].forEach((id) => $(id).addEventListener("change", updateCfDerived));
 $("btnCfCopyCmd").addEventListener("click", () => copyText($("cfEquiv").textContent, $("btnCfCopyCmd")));
 $("btnCfCopyUrl").addEventListener("click", () => copyText($("cfDataUrl").textContent, $("btnCfCopyUrl")));
+$("btnRec").addEventListener("click", toggleRecord); /* B1: 录制开始/停止同一颗钮 */
 
 $("btnCopyUrl").addEventListener("click", () => copyText($("consoleUrl").textContent, $("btnCopyUrl")));
 $("btnDrCopyUrl").addEventListener("click", () => copyText($("drDataUrl").textContent, $("btnDrCopyUrl")));
@@ -2037,7 +2531,13 @@ $("btnSettings").addEventListener("click", openSettings);
 $("btnSetCancel").addEventListener("click", () => dlgSettings.close());
 $("btnSetX").addEventListener("click", () => dlgSettings.close());
 dlgSettings.addEventListener("cancel", () => dlgSettings.close());
-dlgSettings.addEventListener("close", () => { setErr(null); setFieldErr(null); });
+dlgSettings.addEventListener("close", () => { setErr(null); setFieldErr(null); impReset(); });
+/* B4: 配置导出/导入 */
+$("btnCfgExport").addEventListener("click", doExport);
+$("btnCfgImport").addEventListener("click", () => $("cfgImportFile").click());
+$("cfgImportFile").addEventListener("change", onImportFile);
+$("btnImpMerge").addEventListener("click", () => doImport("merge"));
+$("btnImpReplace").addEventListener("click", () => doImport("replace"));
 $("btnSetApply").addEventListener("click", applyManagerAddr);
 $("setTheme").addEventListener("change", () => {
   const n = $("setTheme").value;
@@ -2076,6 +2576,7 @@ $("consoleUrl").textContent = location.protocol + "//" + location.host;
 refreshSparkColors(); /* 启动即按当前主题取方向色 (浅色/深色都对) */
 poll();
 setInterval(poll, POLL_MS);
+setInterval(recTick, 1000); /* B1: 录制/回放计时节拍 (每秒只改文字, 不重绘列表) */
 </script>
 </body>
 </html>

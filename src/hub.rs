@@ -68,6 +68,8 @@ struct Inner {
 pub struct HubState {
     started: Instant,
     inner: RwLock<Inner>,
+    /// FR-21: 日志身份标签 (如 "桥 b1"); 空串 = 未设 (测试/legacy 未设时留痕缺名)。
+    label: RwLock<String>,
 }
 
 impl HubState {
@@ -85,7 +87,17 @@ impl HubState {
                 retries: 0,
                 auto_reconnect: true, // FR-12: 默认开启自动重连
             }),
+            label: RwLock::new(String::new()),
         }
+    }
+
+    /// FR-21: 设日志身份标签 (建桥时调用一次; legacy 单桥可设 "单桥")。
+    pub fn set_label(&self, s: String) {
+        *w(&self.label) = s;
+    }
+
+    fn label(&self) -> String {
+        r(&self.label).clone()
     }
 
     // ---- 相位 (只有监督任务写) ----
@@ -96,7 +108,20 @@ impl HubState {
     }
 
     pub fn set_phase(&self, p: Phase) {
-        w(&self.inner).phase = p;
+        let mut g = w(&self.inner);
+        if g.phase != p {
+            // FR-21: 状态机迁移留痕 (--log-file 启用时落盘; 未启用 = 无操作)
+            crate::logging::write(
+                "state",
+                &format!(
+                    "{} 相位: {} → {}",
+                    self.label(),
+                    g.phase.as_str(),
+                    p.as_str()
+                ),
+            );
+        }
+        g.phase = p;
     }
 
     // ---- 配置 (监督任务读, /api/config 与 CLI 启动时写) ----
@@ -152,6 +177,8 @@ impl HubState {
     // ---- 最近错误 ----
 
     pub fn set_last_error(&self, e: String) {
+        // FR-21: 错误留痕 (与 lastError 投影同源)
+        crate::logging::write("error", &format!("{} {}", self.label(), e));
         w(&self.inner).last_error = Some(e);
     }
 

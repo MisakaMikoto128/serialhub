@@ -1,5 +1,22 @@
 # SerialHub 更新日志
 
+## v2.0.0 — 2026-09-15
+
+### 新增 (Sprint 13 · 批次 B)
+- **录制与回放 (FR-19)**: 每桥抽屉新「录制」页签 —— 收发字节原样录成 JSONL 录像
+  (每行 ts/dir/hex, 存 exe 旁 recordings/, `--recordings-dir` 可改), 按原始时序回放给串口
+  (只回放 tx 行, 0.5~10 倍速 / 循环可调), 固件复现与测试注入用; 桥删除录像保留
+- **旁路转发 (FR-20)**: 每桥可配转发目标 —— 串口收到的数据单向转发到 TCP 地址
+  (只出不进防环路), 断线 3s 自动重连, 运行中改配热生效, 卡片显示连接状态
+- **日志文件 (FR-21)**: `--log-file <路径>` 记录启动/状态迁移/错误/录制回放/转发事件,
+  滚动 5MB×3 份; 手册附 Windows 服务化 (sc create) 说明
+- **配置导入导出 (FR-22)**: 设置弹窗「导出配置 / 导入配置」—— 导出 fleet.json,
+  合并/替换导入 (schema 校验, 失败不动现有表), 换机器迁移
+
+### 契约
+- fleet 桥对象 15→21 字段 (增 `autoOpen`/`running`/`recording`/`replay`/
+  `forwardTcp`/`forwardConnected`); CLI 新增 `--recordings-dir`/`--log-file`
+
 ## v1.8.1 — 2026-09-14
 
 ### 修复

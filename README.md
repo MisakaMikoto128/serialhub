@@ -24,6 +24,10 @@
 | 串口全参数 | 110~2,000,000 波特, 数据位 7/8, 校验 N/E/O, 停止位 1/2, 流控 none/rtscts/xonxoff |
 | 桌面客户端 | 原生窗口 + 系统托盘 (关窗即退到后台); `--headless` 纯 CLI 模式供脚本与 CI |
 | 主题插件 | exe 旁 `themes/` 放一个 .css 就是一套主题; 内置浅色/深色/示例·奥利奥/Windows 95, 管理台无刷新切换 |
+| 录制与回放 | 一键把桥收发的字节录成 JSONL 录像; 按原始时序把录像里「发给设备」的命令回放给串口 (0.5~10 倍速/循环), 固件复现与测试注入 |
+| 旁路转发 | 串口收到的数据单向实时转发到一个 TCP 地址 (只出不进防环路, 断线自动重连), 旁路观测不扰主链路 |
+| 日志文件 | `--log-file` 记录启动/状态/错误/录制回放/转发事件, 滚动 5MB×3 份 |
+| 配置导入导出 | 设置弹窗一键导出全部桥配置, 合并/替换导入, 换机器迁移 |
 | CLI ⇄ UI 对等 | 每个配置项两端都有; 管理台一键复制与当前配置等价的启动命令 |
 
 ## 快速开始
@@ -73,8 +77,8 @@ serialhub --port COM1 --baud 115200 --config 8N2 --addr 127.0.0.1:8080
 ## 开发
 
 ```bash
-cargo test                      # Rust 单元测试 (83 条)
-python -m pytest tests/ -v      # 集成一致性套件 (COM1↔COM2 虚拟对, 63 条)
+cargo test                      # Rust 单元测试 (115 条)
+python -m pytest tests/ -v      # 集成一致性套件 (COM1↔COM2 虚拟对, 72 条)
 ```
 
 本项目由一个**多智能体团队**迭代 (架构师编排 → Dev 开发 → QA 测试 → UX 体验官, 反馈回流待办池);
@@ -102,6 +106,9 @@ in both directions, broadcast to every connected client.
   `--headless` for scripts and CI.
 - **Theme plugins** — drop a `.css` into `themes/` and it appears in the console;
   four built-ins including a Windows 95 tribute.
+- **Record & replay, forwarding, logs, import/export** — capture bridge traffic as
+  JSONL and replay TX back to the port; one-way serial→TCP forwarding; rolling
+  `--log-file`; export/import all bridge configs for machine migration.
 
 Grab a prebuilt binary from [Releases](../../releases) or run
 `cargo install --path .`, then open `http://127.0.0.1:8080`. Docs are in

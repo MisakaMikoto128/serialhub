@@ -34,6 +34,9 @@ pub enum PortEvent {
 pub struct PortCtx {
     pub hub: Arc<HubState>,
     pub bc_tx: broadcast::Sender<Vec<u8>>,
+    /// FR-19: TX tee (send_to_port 成功入队时的帧广播) —— 录制器订阅它与 RX
+    /// 同源 tee 串口收发帧; 无订阅者时 send 失败即弃, 字节通路零开销。
+    pub tx_bc: broadcast::Sender<Vec<u8>>,
     /// 当前会话的 TX 队列发送端; None = 串口未打开, 客户端帧直接丢弃。
     pub tx_slot: Arc<Mutex<Option<StdSender<Vec<u8>>>>>,
     /// 当前会话的 stop 标志 (FR-8 干净退出用): GUI 退出时置 true,
@@ -67,11 +70,16 @@ impl PortCtx {
     }
 
     /// 串口未打开或写线程已死 → 直接丢弃返回 false (绝不 panic)。
+    /// 成功入队时经 tx_bc tee 一次 (FR-19 录制源; 无订阅者即弃, 不反压)。
     pub fn send_to_port(&self, data: &[u8]) -> bool {
-        match &*lock_mutex(&self.tx_slot) {
+        let ok = match &*lock_mutex(&self.tx_slot) {
             Some(tx) => tx.send(data.to_vec()).is_ok(),
             None => false,
+        };
+        if ok {
+            let _ = self.tx_bc.send(data.to_vec());
         }
+        ok
     }
 }
 
@@ -266,6 +274,7 @@ mod tests {
         let ctx = PortCtx {
             hub: Arc::new(HubState::new(SerialConfig::default(), 0)),
             bc_tx: broadcast::channel(16).0,
+            tx_bc: broadcast::channel(16).0,
             tx_slot: Arc::new(Mutex::new(None)),
             active_stop: Arc::new(Mutex::new(None)),
         };

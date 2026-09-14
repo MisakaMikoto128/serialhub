@@ -70,6 +70,7 @@ pub async fn run_service(
     let ctx = PortCtx {
         hub: hub.clone(),
         bc_tx: bc_tx.clone(),
+        tx_bc: broadcast::channel(256).0,
         tx_slot: Arc::new(std::sync::Mutex::new(None)),
         active_stop: Arc::new(std::sync::Mutex::new(None)),
     };
@@ -690,6 +691,7 @@ mod tests {
         let ctx = PortCtx {
             hub: hub.clone(),
             bc_tx: broadcast::channel(16).0,
+            tx_bc: broadcast::channel(16).0,
             tx_slot: Arc::new(std::sync::Mutex::new(None)),
             active_stop: Arc::new(std::sync::Mutex::new(None)),
         };

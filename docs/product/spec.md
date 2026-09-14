@@ -101,6 +101,21 @@ websocket-serial-server —— 2021 年停更, JSON+base64 包帧。
 - **FR-17 新建桥端口自动递增**: 新建桥表单的网址端口预填下一个空闲端口
   (管理台端口+1 起, 跳过已用桥端口), 用户仍可手动改。
 
+- **FR-19 数据录制与回放 (每桥)**: 录制 = tap 通道 tee 落盘 JSONL
+  (每行 {"ts":ms,"dir":"rx|tx","hex":"..."}), 存 recordings/ 目录 (exe 旁),
+  桥删除录像保留; 回放 = 把选中录像按原始时序写回串口 TX (倍率 0.5~10 可调),
+  用于固件复现/测试注入; API: POST /api/fleet/<id>/record/start|stop,
+  GET /api/fleet/<id>/recordings, POST /api/fleet/<id>/replay {file,speed,loop}。
+  UI: 每桥抽屉「录制」钮 + 录像列表 (名/时长/字节数) + 回放/删除。
+- **FR-20 旁路转发 (每桥, v1 TCP)**: 桥配置 forwardTcp:"host:port" (可空) ——
+  串口 RX 单向转发到该 TCP 地址 (自动重连 3s), WS 上行不回注 (防环路);
+  UI 设置项 + 状态显示; MQTT 推迟计划池。
+- **FR-21 日志文件**: --log-file <path> 运行日志 (启动/状态机迁移/错误/录制回放事件,
+  滚动 5MB×3 份); Windows 服务化文档化 (sc create 包装 headless 形态)。
+- **FR-22 配置导入导出**: GET /api/fleet/export (fleet.json 原样下载) +
+  POST /api/fleet/import {mode:"merge"|"replace"} (导入前 schema 校验, 失败 400);
+  UI: 设置弹窗 导出/导入 两钮。
+
 ## 3. UI 需求 (UI)
 
 - **UI-1 控件尺度统一 (苹果式)**: 全站控件只允许两档高 —— 标准 34px / 紧凑 28px

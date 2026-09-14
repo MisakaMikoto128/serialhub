@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{FromRequestParts, Path as AxumPath, Request, State};
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
@@ -81,6 +81,17 @@ pub struct Bridge {
     pub stop_tx: watch::Sender<bool>,
     /// 统计引擎: 1s 滑窗 (采样由管理器任务驱动)。
     pub rates: Mutex<RateWindow>,
+    /// FR-19: 录制会话 (None = 空闲; 状态机见 record 模块)。
+    pub rec: Mutex<Option<crate::record::RecHandle>>,
+    /// FR-19: 回放会话 (None = 空闲; 进度经 detail_json.replay 可见)。
+    pub replay: Mutex<Option<crate::record::ReplayHandle>>,
+    /// FR-20: 旁路转发配置 ("host:port"; 空串 = 关闭) —— 配置真相, 热改经
+    /// forward::apply_target 通知会话任务。
+    forward_target: RwLock<String>,
+    /// FR-20: 当前 TCP 转发是否连着 (detail_json.forwardConnected)。
+    pub forward_connected: AtomicBool,
+    /// FR-20: 运行中的转发会话 (None = 桥停止中/未运行; 随桥数据面启停)。
+    pub forward: Mutex<Option<crate::forward::ForwardSession>>,
     serve_handle: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -94,13 +105,16 @@ impl Bridge {
         auto_open: bool,
         auto_reconnect: bool,
         max_clients: u32,
+        forward_tcp: String,
     ) -> Arc<Bridge> {
         let hub = Arc::new(HubState::new(serial, max_clients));
         hub.set_auto_reconnect(auto_reconnect); // FR-12: 建桥即定 (改配走 hub)
+        hub.set_label(format!("桥 {id}")); // FR-21: 日志身份标签
         let (bc_tx, _) = tokio::sync::broadcast::channel::<Vec<u8>>(1024);
         let ctx = PortCtx {
             hub: hub.clone(),
             bc_tx,
+            tx_bc: tokio::sync::broadcast::channel(256).0,
             tx_slot: Arc::new(Mutex::new(None)),
             active_stop: Arc::new(Mutex::new(None)),
         };
@@ -124,6 +138,11 @@ impl Bridge {
             created: Instant::now(),
             stop_tx,
             rates: Mutex::new(RateWindow::new()),
+            rec: Mutex::new(None),
+            replay: Mutex::new(None),
+            forward_target: RwLock::new(forward_tcp),
+            forward_connected: AtomicBool::new(false),
+            forward: Mutex::new(None),
             serve_handle: Mutex::new(None),
         })
     }
@@ -142,6 +161,22 @@ impl Bridge {
 
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::Relaxed)
+    }
+
+    /// FR-20: 旁路转发目标配置 (空串 = 关闭)。
+    pub fn forward_target(&self) -> String {
+        self.forward_target
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// FR-20: 写旁路转发目标配置 (forward::apply_target 用; 会话通知在它那边)。
+    pub(crate) fn set_forward_target(&self, t: String) {
+        *self
+            .forward_target
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = t;
     }
 
     /// FR-10g 单桥详情 (列表项同构)。phase 恒取 hub 四态 (closed/opening/open/retry,
@@ -178,6 +213,12 @@ impl Bridge {
             "autoReconnect": s.auto_reconnect, // FR-12/ADR-16① (契约 14→15 字段)
             "uptimeSec": self.created.elapsed().as_secs(),
             "autoOpen": self.auto_open.load(Ordering::Relaxed),
+            // FR-19/ADR-24 B1: 录制/回放状态 (15→17 字段; null 或会话摘要)
+            "recording": crate::record::recording_json(self),
+            "replay": crate::record::replay_json(self),
+            // FR-20/ADR-24② B2: 旁路转发配置与连接状态 (17→19 字段)
+            "forwardTcp": self.forward_target(),
+            "forwardConnected": self.forward_connected.load(Ordering::Relaxed),
         })
     }
 }
@@ -315,6 +356,8 @@ pub struct BridgeSpec {
     /// FR-12/ADR-16①: 自动重连开关 (默认 true)。
     pub auto_reconnect: bool,
     pub max_clients: u32,
+    /// FR-20/ADR-24②: 旁路转发目标 ("host:port"; 空串 = 关闭)。调用方已校验。
+    pub forward_tcp: String,
 }
 
 /// 同进程多桥管理器: 桥表 + 持久化 + 兼容分发解析。
@@ -332,6 +375,8 @@ pub struct BridgeManager {
     /// persist 注释), 本快照不再承担"桥变更不抹窗口几何"的主责;
     /// 运行期只有 restore_fleet 写一次; headless 同样只兜底 (不产生新值)。
     window_seen: RwLock<Option<WindowRec>>,
+    /// FR-19: 录像目录 (None = exe 旁 recordings/; --recordings-dir 可指定)。
+    recordings_dir: RwLock<Option<PathBuf>>,
     next_id: AtomicU64,
 }
 
@@ -343,6 +388,7 @@ impl BridgeManager {
             manager_addr: Mutex::new(None),
             persist_suppressed: AtomicBool::new(false),
             window_seen: RwLock::new(None),
+            recordings_dir: RwLock::new(None),
             next_id: AtomicU64::new(1),
         }
     }
@@ -354,6 +400,17 @@ impl BridgeManager {
 
     pub fn manager_addr(&self) -> Option<SocketAddr> {
         *lock_mutex(&self.manager_addr)
+    }
+
+    /// FR-19: 录像目录 (默认 exe 旁 recordings/; --recordings-dir 覆盖)。
+    pub fn set_recordings_dir(&self, d: PathBuf) {
+        *wr(&self.recordings_dir) = Some(d);
+    }
+
+    pub fn recordings_dir(&self) -> PathBuf {
+        rd(&self.recordings_dir)
+            .clone()
+            .unwrap_or_else(crate::record::default_recordings_dir)
     }
 
     pub fn snapshot(&self) -> Vec<Arc<Bridge>> {
@@ -413,6 +470,7 @@ impl BridgeManager {
             spec.auto_open,
             spec.auto_reconnect,
             spec.max_clients,
+            spec.forward_tcp,
         );
         match bind_with_retry(spec.listen, Duration::from_secs(2)).await {
             Ok(listener) => {
@@ -430,6 +488,8 @@ impl BridgeManager {
                 if spec.auto_open && !spec.serial.port.is_empty() {
                     let _ = bridge.cmd_tx.send(HubCmd::Open);
                 }
+                // FR-20: 旁路转发会话随数据面启动 (目标空 = 待命, 不连接)
+                crate::forward::start_session(&bridge);
             }
             Err(e) => {
                 if !lenient {
@@ -483,6 +543,8 @@ impl BridgeManager {
         if b.auto_open.load(Ordering::Relaxed) && !b.hub.config().port.is_empty() {
             let _ = b.cmd_tx.send(HubCmd::Open);
         }
+        // FR-20: 旁路转发会话随数据面启动 (配置在 Bridge.forward_target)
+        crate::forward::start_session(&b);
         Ok(())
     }
 
@@ -499,6 +561,7 @@ impl BridgeManager {
         if !b.running.swap(false, Ordering::Relaxed) {
             return; // 幂等
         }
+        crate::forward::stop_session(b); // FR-20: 断开旁路转发 (TCP 连接随任务收尾)
         let _ = b.cmd_tx.send(HubCmd::Close); // COM 释放优先
         b.ctx.stop_active();
         let _ = b.stop_tx.send(true);
@@ -523,7 +586,8 @@ impl BridgeManager {
         Ok(())
     }
 
-    /// 改配 (FR-10g config): name/串口参数/maxClients/autoOpen/autoReconnect;
+    /// 改配 (FR-10g config): name/串口参数/maxClients/autoOpen/autoReconnect/
+    /// forwardTcp (FR-20, 热生效: 断开旧连接按新值重连, 改空 = 断开);
     /// listen 不可改 (FR-10f)。成功即持久化。串口参数沿用"close→config→open"
     /// 语义 (spec 非目标: 不热改); autoReconnect 经 apply_config_core 即改即生效。
     pub fn config_bridge(
@@ -531,6 +595,7 @@ impl BridgeManager {
         id: &str,
         name: Option<String>,
         auto_open: Option<bool>,
+        forward_tcp: Option<String>,
         req: api::ConfigReq,
     ) -> Response {
         let Some(b) = self.get(id) else {
@@ -539,10 +604,23 @@ impl BridgeManager {
         if let Some(n) = name {
             b.set_name(n);
         }
+        if let Some(ft) = &forward_tcp {
+            if let Err(e) = crate::forward::validate_target(ft) {
+                return api::bad(e);
+            }
+        }
         let resp = api::apply_config_core(&b.ctx, req);
         if resp.status().is_success() {
             if let Some(a) = auto_open {
                 b.auto_open.store(a, Ordering::Relaxed);
+            }
+            if let Some(ft) = forward_tcp {
+                // FR-20: 热生效 (会话不在时只落配置, start 时按新值起任务)
+                crate::forward::apply_target(&b, ft);
+                crate::logging::write(
+                    "info",
+                    &format!("桥 {id} 旁路转发目标改为 \"{}\"", b.forward_target()),
+                );
             }
             self.persist();
         }
@@ -582,6 +660,66 @@ impl BridgeManager {
             eprintln!("serialhub: fleet 清单写入失败 ({path:?}): {e}");
         }
     }
+
+    /// FR-22: 导出字节流 —— fleet.json **原样**下载; 盘上无清单 (--no-fleet 或
+    /// 尚未落盘) 时按当前状态即时序列化 (与 persist 写出的形状完全一致)。
+    pub fn fleet_export_bytes(&self) -> Vec<u8> {
+        if let Some(path) = &self.fleet_path {
+            if let Ok(bytes) = std::fs::read(path) {
+                return bytes;
+            }
+        }
+        let recs: Vec<FleetBridgeRec> = self.snapshot().iter().map(rec_of_bridge).collect();
+        let manager = self.manager_addr().map(|a| ManagerRec {
+            addr: a.to_string(),
+        });
+        serde_json::to_vec_pretty(&FleetFile {
+            version: 1,
+            bridges: recs,
+            manager,
+            window: None,
+        })
+        .unwrap_or_default()
+    }
+
+    /// FR-22: 导入 (merge=按 id 合并, 冲突跳过并计数; replace=整表替换, 运行中桥
+    /// 先停)。调用方已做 schema/每桥深校验; 单座创建失败 (端口冲突等) 计入 skipped,
+    /// 不中断导入。成功桥 = 数据面运行 + autoOpen 按需开串口; 结束统一持久化。
+    pub async fn import_bridges(
+        &self,
+        specs: Vec<(FleetBridgeRec, SerialConfig, SocketAddr)>,
+        replace: bool,
+    ) -> (usize, usize) {
+        let mut imported = 0usize;
+        let mut skipped = 0usize;
+        if replace {
+            for b in self.snapshot() {
+                self.stop_one(&b).await; // 运行中桥先停 (含录制/回放自动收尾)
+            }
+            wr(&self.bridges).clear();
+        }
+        for (rec, serial, listen) in specs {
+            let spec = BridgeSpec {
+                id: Some(rec.id.clone()),
+                name: rec.name.clone(),
+                serial,
+                listen,
+                auto_open: rec.auto_open,
+                auto_reconnect: rec.auto_reconnect,
+                max_clients: rec.max_clients,
+                forward_tcp: rec.forward_tcp,
+            };
+            match self.create_bridge_inner(spec, false).await {
+                Ok(_) => imported += 1,
+                Err(e) => {
+                    skipped += 1;
+                    eprintln!("serialhub: 导入桥 {} 跳过: {e}", rec.id);
+                }
+            }
+        }
+        self.persist();
+        (imported, skipped)
+    }
 }
 
 // ============================================================ 持久化 (fleet.json)
@@ -597,6 +735,14 @@ pub(crate) struct FleetBridgeRec {
     #[serde(rename = "maxClients", default)]
     pub max_clients: u32,
     pub listen: String,
+    /// FR-20/ADR-24②: 旁路转发目标 ("host:port"); 空串不落盘 (旧清单零噪声,
+    /// 读入 default 空 = 关闭)。
+    #[serde(
+        rename = "forwardTcp",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub forward_tcp: String,
     pub serial: SerialRec,
 }
 
@@ -768,6 +914,7 @@ fn rec_of_bridge(b: &Arc<Bridge>) -> FleetBridgeRec {
         auto_reconnect: b.hub.auto_reconnect(),
         max_clients: b.hub.max_clients(),
         listen: b.listen_addr().to_string(),
+        forward_tcp: b.forward_target(),
         serial: SerialRec::of_config(&b.hub.config()),
     }
 }
@@ -824,6 +971,7 @@ async fn restore_fleet(mgr: &Arc<BridgeManager>) -> usize {
                     auto_open: rec.auto_open,
                     auto_reconnect: rec.auto_reconnect,
                     max_clients: rec.max_clients,
+                    forward_tcp: rec.forward_tcp.clone(),
                 },
                 true,
             )
@@ -848,6 +996,7 @@ async fn restore_fleet(mgr: &Arc<BridgeManager>) -> usize {
     }
     mgr.next_id.fetch_max(max_id + 1, Ordering::Relaxed);
     mgr.persist_suppressed.store(false, Ordering::Relaxed);
+    crate::logging::write("info", &format!("fleet 恢复完成: {n} 座桥"));
     n
 }
 
@@ -863,6 +1012,8 @@ pub struct ManagerStartup {
     pub addr_explicit: bool,
     /// FR-14: 主题目录; None = exe 旁 themes/ (themes::default_themes_dir)。
     pub themes_dir: Option<PathBuf>,
+    /// FR-19: 录像目录; None = exe 旁 recordings/ (record::default_recordings_dir)。
+    pub recordings_dir: Option<PathBuf>,
     /// CLI 兼容桥参数 (FR-10h); None = 不建 (纯 fleet 模式, 测试用)。
     pub cli_bridge: Option<CliBridgeSpec>,
     /// fleet.json 路径; None = 持久化关闭 (--no-fleet)。
@@ -899,6 +1050,7 @@ impl ManagerStartup {
             control_addr: cli.addr,
             addr_explicit: cli.addr_explicit,
             themes_dir: cli.themes_dir.clone(),
+            recordings_dir: cli.recordings_dir.clone(),
             fleet_path,
             cli_bridge: Some(CliBridgeSpec {
                 name: "CLI".into(),
@@ -1171,6 +1323,22 @@ fn control_router(cs: ControlState) -> Router {
             patch(fleet_config).post(fleet_config),
         )
         .route("/api/fleet/{id}/tap", get(fleet_tap))
+        // ---- FR-19 录制与回放 (ADR-24 B1) ----
+        .route("/api/fleet/{id}/record/start", post(fleet_record_start))
+        .route("/api/fleet/{id}/record/stop", post(fleet_record_stop))
+        .route("/api/fleet/{id}/recordings", get(fleet_recordings))
+        // 删单条录像 (ADR-24⑥: 契约缺口裁定; 穿越拒绝同 replay)
+        .route(
+            "/api/fleet/{id}/recordings/delete",
+            post(fleet_recordings_delete),
+        )
+        .route("/api/fleet/{id}/replay", post(fleet_replay))
+        // loop=true 的回放需要可被停止 (FR-19 "循环到被停止")
+        .route("/api/fleet/{id}/replay/stop", post(fleet_replay_stop))
+        // ---- FR-22 配置导入导出 (ADR-24 B4) ----
+        // export: GET+POST 双受理 (ADR-24⑥; UI 先 POST 后 GET)
+        .route("/api/fleet/export", get(fleet_export).post(fleet_export))
+        .route("/api/fleet/import", post(fleet_import))
         // ---- FR-13 管理台设置: 控制面地址原地换绑 (复用 ADR-12 机制) ----
         .route("/api/manager/addr", post(manager_set_addr))
         // ---- ADR-21②: 用系统默认浏览器打开管理台 (壳内页面按钮受信路径) ----
@@ -1263,6 +1431,9 @@ struct FleetCreateReq {
     auto_reconnect: Option<bool>,
     #[serde(rename = "maxClients", default)]
     max_clients: Option<u32>,
+    /// FR-20/ADR-24②: 旁路转发目标 "host:port" (缺省/空 = 关闭)。
+    #[serde(rename = "forwardTcp", default)]
+    forward_tcp: Option<String>,
 }
 
 async fn fleet_create(
@@ -1318,12 +1489,25 @@ async fn fleet_create(
         auto_open: req.auto_open.unwrap_or(true),
         auto_reconnect: req.auto_reconnect.unwrap_or(true), // FR-12: 缺省 true
         max_clients: req.max_clients.unwrap_or(0),
+        forward_tcp: match &req.forward_tcp {
+            Some(ft) => {
+                if let Err(e) = crate::forward::validate_target(ft) {
+                    return api::bad(e);
+                }
+                ft.trim().to_string()
+            }
+            None => String::new(),
+        },
     };
     match cs.mgr.create_bridge(spec).await {
         Ok(b) => {
             let id = b.id.clone();
             let listen = b.listen_addr().to_string();
             println!("serialhub: 新建桥 {id} ({}) → 数据端口 {listen}", b.name());
+            crate::logging::write(
+                "info",
+                &format!("新建桥 {id} ({}) → 数据端口 {listen}", b.name()),
+            );
             Json(json!({"ok": true, "id": id, "listen": listen})).into_response()
         }
         Err(e) => api::bad(e),
@@ -1335,7 +1519,10 @@ async fn fleet_start(State(cs): State<ControlState>, AxumPath(id): AxumPath<Stri
         return not_found_bridge(&id);
     }
     match cs.mgr.start_bridge(&id).await {
-        Ok(()) => api::ok(),
+        Ok(()) => {
+            crate::logging::write("info", &format!("桥 {id} 数据面启动"));
+            api::ok()
+        }
         Err(e) => api::bad(e),
     }
 }
@@ -1345,14 +1532,20 @@ async fn fleet_stop(State(cs): State<ControlState>, AxumPath(id): AxumPath<Strin
         return not_found_bridge(&id);
     }
     match cs.mgr.stop_bridge(&id).await {
-        Ok(()) => api::ok(),
+        Ok(()) => {
+            crate::logging::write("info", &format!("桥 {id} 数据面停止"));
+            api::ok()
+        }
         Err(e) => api::bad(e),
     }
 }
 
 async fn fleet_delete(State(cs): State<ControlState>, AxumPath(id): AxumPath<String>) -> Response {
     match cs.mgr.delete_bridge(&id).await {
-        Ok(()) => api::ok(),
+        Ok(()) => {
+            crate::logging::write("info", &format!("桥 {id} 已删除 (录像文件保留)"));
+            api::ok()
+        }
         Err(e) if e.starts_with("桥不存在") => not_found_bridge(&id),
         Err(e) => api::bad(e),
     }
@@ -1387,6 +1580,9 @@ struct FleetConfigReq {
     /// FR-12/ADR-16①: 自动重连开关 (缺省 = 不改动)。
     #[serde(rename = "autoReconnect", default)]
     auto_reconnect: Option<bool>,
+    /// FR-20/ADR-24②: 旁路转发目标 "host:port" (缺省 = 不改动; 空串 = 关闭)。
+    #[serde(rename = "forwardTcp", default)]
+    forward_tcp: Option<String>,
 }
 
 async fn fleet_config(
@@ -1422,7 +1618,8 @@ async fn fleet_config(
         cr.stop_bits = s.stop_bits.or(cr.stop_bits);
         cr.flow = s.flow.or(cr.flow);
     }
-    cs.mgr.config_bridge(&id, req.name, req.auto_open, cr)
+    cs.mgr
+        .config_bridge(&id, req.name, req.auto_open, req.forward_tcp, cr)
 }
 
 // ---- FR-10g: tap (旁看串口 RX 原始字节, 只读, 不计 clients) ----
@@ -1463,6 +1660,219 @@ async fn tap_loop(socket: WebSocket, b: Arc<Bridge>) {
             },
         }
     }
+}
+
+// ---- FR-19: 录制与回放 (ADR-24 Sprint 13 B1; 引擎见 record 模块) ----
+
+/// POST /api/fleet/<id>/record/start → {"ok":true,"file":"<桥id>-<戳>.jsonl"}。
+async fn fleet_record_start(
+    State(cs): State<ControlState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let Some(b) = cs.mgr.get(&id) else {
+        return not_found_bridge(&id);
+    };
+    match crate::record::start(&b, &cs.mgr.recordings_dir()) {
+        Ok(file) => Json(json!({"ok": true, "file": file})).into_response(),
+        Err(e) => api::bad(e),
+    }
+}
+
+/// POST /api/fleet/<id>/record/stop → {"ok":true,"file":...,"frames":n,"bytes":n}。
+async fn fleet_record_stop(
+    State(cs): State<ControlState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let Some(b) = cs.mgr.get(&id) else {
+        return not_found_bridge(&id);
+    };
+    match crate::record::stop(&b).await {
+        Ok((file, frames, bytes)) => Json(json!({
+            "ok": true, "file": file, "frames": frames, "bytes": bytes
+        }))
+        .into_response(),
+        Err(e) => api::bad(e),
+    }
+}
+
+/// GET /api/fleet/<id>/recordings → {"ok":true,"recordings":[{file,frames,bytes,
+/// startedAt,durationSec}]} (本桥录像, 新的在前; 桥删除后文件仍在, 归属按文件名前缀)。
+async fn fleet_recordings(
+    State(cs): State<ControlState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let Some(b) = cs.mgr.get(&id) else {
+        return not_found_bridge(&id);
+    };
+    let list = crate::record::list(&b, &cs.mgr.recordings_dir());
+    Json(json!({"ok": true, "recordings": list})).into_response()
+}
+
+#[derive(Deserialize)]
+struct FleetRecordingsDeleteReq {
+    file: String,
+}
+
+/// POST /api/fleet/<id>/recordings/delete {"file"} → {"ok":true} (ADR-24⑥):
+/// 只删录像目录内本桥可解析的文件 (路径穿越拒绝同 replay); 文件不存在 → 400。
+async fn fleet_recordings_delete(
+    State(cs): State<ControlState>,
+    AxumPath(id): AxumPath<String>,
+    body: Result<Json<FleetRecordingsDeleteReq>, JsonRejection>,
+) -> Response {
+    // b 仅作存在性校验 (未知名 → 404, 与其他端点同序); 删除按文件名直取
+    let Some(_b) = cs.mgr.get(&id) else {
+        return not_found_bridge(&id);
+    };
+    let Json(req) = match body {
+        Ok(v) => v,
+        Err(rej) => return api::bad(format!("请求体不是合法 JSON: {rej}")),
+    };
+    let dir = cs.mgr.recordings_dir();
+    let path = match crate::record::resolve_file(&dir, &req.file) {
+        Ok(p) => p,
+        Err(e) => return api::bad(e),
+    };
+    match std::fs::remove_file(&path) {
+        Ok(()) => api::ok(),
+        Err(e) => api::bad(format!("删除录像失败: {e}")),
+    }
+}
+
+#[derive(Deserialize)]
+struct FleetReplayReq {
+    file: String,
+    #[serde(default)]
+    speed: Option<f64>,
+    #[serde(rename = "loop", default)]
+    r#loop: Option<bool>,
+}
+
+/// POST /api/fleet/<id>/replay {"file","speed","loop"}: 按原始时序把录像字节写回
+/// 串口 TX (speed 0.5~10, 默认 1.0; loop 默认 false)。**只回放 tx 行** (ADR-24⑥)。
+/// 安全: 串口须 open; file 须解析为录像目录内已有文件 (路径穿越拒绝)。
+async fn fleet_replay(
+    State(cs): State<ControlState>,
+    AxumPath(id): AxumPath<String>,
+    body: Result<Json<FleetReplayReq>, JsonRejection>,
+) -> Response {
+    let Some(b) = cs.mgr.get(&id) else {
+        return not_found_bridge(&id);
+    };
+    let Json(req) = match body {
+        Ok(v) => v,
+        Err(rej) => return api::bad(format!("请求体不是合法 JSON: {rej}")),
+    };
+    let rr = crate::record::ReplayReq {
+        file: req.file,
+        speed: req.speed,
+        loop_play: req.r#loop.unwrap_or(false),
+    };
+    let speed = rr.speed.unwrap_or(1.0);
+    let loop_play = rr.loop_play;
+    let file = rr.file.clone();
+    match crate::record::start_replay(&b, &cs.mgr.recordings_dir(), rr) {
+        Ok(()) => Json(json!({
+            "ok": true, "file": file, "speed": speed, "loop": loop_play
+        }))
+        .into_response(),
+        Err(e) => api::bad(e),
+    }
+}
+
+/// POST /api/fleet/<id>/replay/stop: 停止回放 (幂等, loop=true 的停止入口)。
+async fn fleet_replay_stop(
+    State(cs): State<ControlState>,
+    AxumPath(id): AxumPath<String>,
+) -> Response {
+    let Some(b) = cs.mgr.get(&id) else {
+        return not_found_bridge(&id);
+    };
+    crate::record::stop_replay(&b);
+    api::ok()
+}
+
+// ---- FR-22: 配置导入导出 (ADR-24 Sprint 13 B4) ----
+
+/// GET+POST /api/fleet/export → fleet.json 原样下载 (attachment; 无清单文件时按
+/// 当前状态序列化, 形状与 persist 写出一致)。双受理为 ADR-24⑥ 裁定 (UI 先 POST
+/// 后 GET 兼容任务文口径)。
+async fn fleet_export(State(cs): State<ControlState>) -> Response {
+    let bytes = cs.mgr.fleet_export_bytes();
+    (
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"fleet.json\"",
+            ),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
+#[derive(Deserialize)]
+struct FleetImportReq {
+    mode: String,
+    json: Value,
+}
+
+/// POST /api/fleet/import {"mode":"merge"|"replace","json":{...}}:
+/// schema 校验 (version==1 + bridges 形状 + 每桥 listen/serial 深校验), 失败 400;
+/// merge=按 id 合并 (冲突跳过并计数), replace=整表替换 (运行中桥先停);
+/// 导入桥即建即启 (数据面运行, autoOpen 按需开串口), 结束持久化。
+async fn fleet_import(
+    State(cs): State<ControlState>,
+    body: Result<Json<FleetImportReq>, JsonRejection>,
+) -> Response {
+    let Json(req) = match body {
+        Ok(v) => v,
+        Err(rej) => return api::bad(format!("请求体不是合法 JSON: {rej}")),
+    };
+    let replace = match req.mode.as_str() {
+        "merge" => false,
+        "replace" => true,
+        other => return api::bad(format!("mode 只支持 merge/replace, 得到 \"{other}\"")),
+    };
+    // schema 校验: 整份解析 (version 必填, bridges 形状), 再逐桥深校验 ——
+    // 任何一处非法整体拒绝 (400), 不做半套导入
+    let ff: FleetFile = match serde_json::from_value(req.json) {
+        Ok(f) => f,
+        Err(e) => return api::bad(format!("清单 schema 非法: {e}")),
+    };
+    if ff.version != 1 {
+        return api::bad(format!("不支持的清单版本: {} (仅支持 1)", ff.version));
+    }
+    let mut specs = Vec::with_capacity(ff.bridges.len());
+    for rec in &ff.bridges {
+        let serial = match rec.serial.to_config() {
+            Ok(c) => c,
+            Err(e) => return api::bad(format!("桥 {} 串口配置非法: {e}", rec.id)),
+        };
+        if let Err(e) = crate::forward::validate_target(&rec.forward_tcp) {
+            return api::bad(format!("桥 {} forwardTcp 非法: {e}", rec.id));
+        }
+        let listen: SocketAddr = match rec.listen.trim().parse() {
+            Ok(a) => a,
+            Err(_) => {
+                return api::bad(format!(
+                    "桥 {} listen 非法: \"{}\" (形如 127.0.0.1:8101)",
+                    rec.id, rec.listen
+                ))
+            }
+        };
+        specs.push((rec.clone(), serial, listen));
+    }
+    let (imported, skipped) = cs.mgr.import_bridges(specs, replace).await;
+    crate::logging::write(
+        "info",
+        &format!(
+            "fleet 导入完成 (mode={}): imported={imported} skipped={skipped}",
+            if replace { "replace" } else { "merge" }
+        ),
+    );
+    Json(json!({"ok": true, "imported": imported, "skipped": skipped})).into_response()
 }
 
 // ---- FR-13: 管理台设置 —— 控制面地址原地换绑 ----
@@ -1640,7 +2050,18 @@ pub async fn run_manager_with(
         cb(ServiceEvent::Ready(addr));
     }
     println!("SerialHub 管理台就绪: http://{addr} (多桥管理器)");
+    crate::logging::write(
+        "info",
+        &format!(
+            "SerialHub v{} 启动: 管理台 http://{addr} (多桥管理器)",
+            env!("CARGO_PKG_VERSION")
+        ),
+    );
     mgr.set_manager_addr(addr);
+    // FR-19: 录像目录 (--recordings-dir 或默认 exe 旁 recordings/)
+    if let Some(d) = su.recordings_dir.clone() {
+        mgr.set_recordings_dir(d);
+    }
 
     // 2) fleet 恢复 (存在则恢复全部桥, FR-10b)
     let restored = restore_fleet(&mgr).await;
@@ -1660,6 +2081,7 @@ pub async fn run_manager_with(
                     auto_open: spec.auto_open && explicit_port,
                     auto_reconnect: spec.auto_reconnect,
                     max_clients: spec.max_clients,
+                    forward_tcp: String::new(),
                 })
                 .await
             {
@@ -1966,6 +2388,7 @@ mod tests {
             auto_open: true,
             auto_reconnect: false,
             max_clients: 4,
+            forward_tcp: String::new(),
             listen: "127.0.0.1:8101".into(),
             serial: SerialRec {
                 port: "COM1".into(),
@@ -2080,6 +2503,7 @@ mod tests {
             auto_open: false,
             auto_reconnect: true,
             max_clients: 0,
+            forward_tcp: String::new(),
             listen: "127.0.0.1:8081".into(),
             serial: SerialRec {
                 port: "COM1".into(),
@@ -2166,6 +2590,7 @@ mod tests {
             auto_open: false,
             auto_reconnect: true,
             max_clients: 0,
+            forward_tcp: String::new(),
         })
         .await
         .unwrap();
@@ -2196,6 +2621,7 @@ mod tests {
             auto_open: false,
             auto_reconnect: true,
             max_clients: 0,
+            forward_tcp: String::new(),
         })
         .await
         .unwrap();
@@ -2241,6 +2667,7 @@ mod tests {
             auto_open: false,
             auto_reconnect: true,
             max_clients: 0,
+            forward_tcp: String::new(),
         })
         .await
         .unwrap();
@@ -2265,6 +2692,7 @@ mod tests {
             auto_open: false,
             auto_reconnect: true,
             max_clients: 0,
+            forward_tcp: String::new(),
             listen: "127.0.0.1:8101".into(),
             serial: SerialRec {
                 port: "COM1".into(),
@@ -2368,6 +2796,7 @@ mod tests {
             control_addr,
             addr_explicit,
             themes_dir: Some(themes_dir.clone()),
+            recordings_dir: None,
             cli_bridge: cli,
             fleet_path: None, // 直接注入 mgr 时以 mgr.fleet_path 为准
         };
@@ -2771,6 +3200,7 @@ mod tests {
                 auto_open: false,
                 auto_reconnect: false,
                 max_clients: 0,
+                forward_tcp: String::new(),
                 listen: "127.0.0.1:0".into(),
                 serial: SerialRec {
                     port: "COM9".into(),
@@ -2787,6 +3217,7 @@ mod tests {
                 auto_open: false,
                 auto_reconnect: true,
                 max_clients: 2,
+                forward_tcp: String::new(),
                 listen: "127.0.0.1:0".into(),
                 serial: SerialRec {
                     port: "COM8".into(), // 仅配置, autoOpen=false 不真开
@@ -3084,6 +3515,7 @@ mod tests {
             false,
             true,
             0,
+            String::new(),
         );
         let t0 = Instant::now();
         lock_mutex(&b.rates).push(t0, 0, 0);
@@ -3161,12 +3593,14 @@ mod tests {
         t.shutdown().await;
     }
 
-    /// ADR-15①/ADR-16①: fleet 桥对象契约字段集 14→15 —— 原 14 契约字段
-    /// (与 QA conftest FLEET_ROW_FIELDS 同源) + autoReconnect (bool, FR-12)。
+    /// ADR-15①/ADR-16①/ADR-24 B1/B2: fleet 桥对象契约字段集 17→19 —— 原 15 契约
+    /// 字段 (与 QA conftest FLEET_ROW_FIELDS 同源) + recording/replay (FR-19:
+    /// 录制/回放状态, null 或会话摘要) + forwardTcp/forwardConnected (FR-20:
+    /// 旁路转发配置与连接状态, QA 需随动修订字段集)。
     /// 列表行与单桥详情同构, 必须都回显; 除已声明的内部字段 (running/autoOpen)
     /// 外不得缺字段, 也不得混入未裁定字段。
     #[tokio::test(flavor = "multi_thread")]
-    async fn fleet_bridge_object_contract_15_fields() {
+    async fn fleet_bridge_object_contract_19_fields() {
         use std::collections::HashSet;
         let t = spawn_mgr(None, None).await;
         fleet_create_ok(
@@ -3188,8 +3622,12 @@ mod tests {
             "lastError",
             "uptimeSec",
             "maxClients",
-            "retries",       // ADR-15① 新增 (13→14)
-            "autoReconnect", // ADR-16① 新增 (14→15)
+            "retries",          // ADR-15① 新增 (13→14)
+            "autoReconnect",    // ADR-16① 新增 (14→15)
+            "recording",        // FR-19/ADR-24 B1 新增 (15→17)
+            "replay",           // FR-19/ADR-24 B1 新增 (15→17)
+            "forwardTcp",       // FR-20/ADR-24② B2 新增 (17→19)
+            "forwardConnected", // FR-20/ADR-24② B2 新增 (17→19)
         ]
         .into_iter()
         .collect();
@@ -3220,6 +3658,23 @@ mod tests {
                 row["autoReconnect"].as_bool(),
                 Some(true),
                 "{where_} autoReconnect 须为 bool (缺省 true): {row}"
+            );
+            assert!(
+                row["recording"].is_null(),
+                "{where_} 空闲桥 recording 须为 null: {row}"
+            );
+            assert!(
+                row["replay"].is_null(),
+                "{where_} 空闲桥 replay 须为 null: {row}"
+            );
+            assert_eq!(
+                row["forwardTcp"], "",
+                "{where_} 默认桥 forwardTcp 须为空串 (关闭): {row}"
+            );
+            assert_eq!(
+                row["forwardConnected"].as_bool(),
+                Some(false),
+                "{where_} 未配置转发 forwardConnected 须 false: {row}"
             );
         };
         let (_, resp) = http_req(t.addr, "GET", "/api/fleet", None).await;
@@ -3537,6 +3992,861 @@ mod tests {
         let (code, body) = http_req(t.addr, "GET", "/favicon.svg", None).await;
         assert_eq!(code, 200, "favicon 端点恒可用 (资产缺失走兜底)");
         assert!(body.contains("<svg"), "应为 SVG: {body}");
+        t.shutdown().await;
+    }
+
+    // ---- FR-19: 录制与回放 (ADR-24 B1) ----
+
+    fn temp_recdir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("sh_rec_{}_{}", std::process::id(), tag));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
+    /// 录制状态机 + JSONL 行格式 + 计数器 + 列表端点:
+    /// RX 注入经 bc_tx (tap 同源), TX 注入经 set_tx 后 send_to_port (tee 源),
+    /// 停止后逐行校验 {"ts","dir","hex"} (hex 小写), stop 响应计数与文件一致。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn record_jsonl_format_counters_and_state() {
+        let t = spawn_mgr(None, None).await;
+        let recdir = temp_recdir("fmt");
+        t.mgr.set_recordings_dir(recdir.clone());
+        fleet_create_ok(
+            t.addr,
+            r#"{"name":"录制桥","listen":"127.0.0.1:0","autoOpen":false}"#,
+        )
+        .await;
+        let b = t.mgr.get("b1").unwrap();
+        let (txq_tx, _txq_rx) = std_mpsc::channel::<Vec<u8>>();
+        b.ctx.set_tx(txq_tx);
+
+        // 空闲态: detail.recording = null; 未开始 stop → 400
+        let (_, resp) = http_req(t.addr, "GET", "/api/fleet/b1", None).await;
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        assert!(v["bridge"]["recording"].is_null(), "{resp}");
+        let (code, resp) = http_req(t.addr, "POST", "/api/fleet/b1/record/stop", None).await;
+        assert_eq!(code, 400, "未录制时 stop 应 400: {resp}");
+
+        // 开始录制 → {"ok":true,"file":"b1-<戳>.jsonl"}
+        let (code, resp) = http_req(t.addr, "POST", "/api/fleet/b1/record/start", None).await;
+        assert_eq!(code, 200, "{resp}");
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["ok"], true);
+        let file = v["file"].as_str().unwrap().to_string();
+        assert!(
+            file.starts_with("b1-") && file.ends_with(".jsonl"),
+            "{file}"
+        );
+        // 进行中: detail.recording.file 回显; 重复 start → 400 (非幂等)
+        let (_, resp) = http_req(t.addr, "GET", "/api/fleet/b1", None).await;
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["bridge"]["recording"]["file"], file, "{resp}");
+        let (code, resp) = http_req(t.addr, "POST", "/api/fleet/b1/record/start", None).await;
+        assert_eq!(code, 400, "重复录制应 400: {resp}");
+
+        // 注入一帧 RX (tap 同源 bc_tx) + 一帧 TX (send_to_port tee)
+        b.ctx.bc_tx.send(b"RX-HELLO".to_vec()).unwrap();
+        assert!(b.ctx.send_to_port(b"tx-abc"), "TX 应成功入队");
+        tokio::time::sleep(Duration::from_millis(120)).await; // 至少一个 flush 周期前
+
+        let (code, resp) = http_req(t.addr, "POST", "/api/fleet/b1/record/stop", None).await;
+        assert_eq!(code, 200, "{resp}");
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["file"], file);
+        assert_eq!(v["frames"], 2, "{resp}");
+        assert_eq!(v["bytes"], 14, "RX-HELLO(8) + tx-abc(6) = 14: {resp}");
+
+        // 文件逐行校验: JSONL 形状 / dir / 小写 hex / ts 非递减
+        let body = std::fs::read_to_string(recdir.join(&file)).unwrap();
+        let lines: Vec<Value> = body
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("每行都是合法 JSON"))
+            .collect();
+        assert_eq!(lines.len(), 2, "{body}");
+        for l in &lines {
+            let mut keys: Vec<&str> = l.as_object().unwrap().keys().map(|s| s.as_str()).collect();
+            keys.sort_unstable();
+            assert_eq!(keys, ["dir", "hex", "ts"], "行恰三字段: {body}");
+            assert!(l["ts"].is_u64(), "ts 为整数毫秒: {body}");
+            assert!(l["hex"].is_string(), "{body}");
+        }
+        // dir 集合与小写 hex (select 双臂就绪时消费顺序随机, 不钉行序)
+        let dirs: Vec<&str> = lines.iter().map(|l| l["dir"].as_str().unwrap()).collect();
+        let mut sorted = dirs.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, ["rx", "tx"], "{body}");
+        let by_dir = |d: &str| {
+            lines.iter().find(|l| l["dir"] == d).unwrap()["hex"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(by_dir("rx"), "52582d48454c4c4f", "RX-HELLO 小写 hex");
+        assert_eq!(by_dir("tx"), "74782d616263", "tx-abc 小写 hex");
+        let ts0 = lines[0]["ts"].as_u64().unwrap();
+        let ts1 = lines[1]["ts"].as_u64().unwrap();
+        assert!(ts1 >= ts0, "ts 相对录制开始且非递减: {body}");
+        // 停止后: detail.recording 归 null
+        let (_, resp) = http_req(t.addr, "GET", "/api/fleet/b1", None).await;
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        assert!(v["bridge"]["recording"].is_null(), "{resp}");
+
+        // 列表端点: 恰一条, 计数与列表字段齐全
+        let (code, resp) = http_req(t.addr, "GET", "/api/fleet/b1/recordings", None).await;
+        assert_eq!(code, 200, "{resp}");
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        let list = v["recordings"].as_array().unwrap();
+        assert_eq!(list.len(), 1, "{resp}");
+        assert_eq!(list[0]["file"], file);
+        assert_eq!(list[0]["frames"], 2);
+        assert_eq!(list[0]["bytes"], 14);
+        assert!(list[0]["startedAt"].as_u64().unwrap() > 0, "{resp}");
+        assert!(list[0]["durationSec"].as_f64().unwrap() >= 0.0);
+        // 不存在的桥 → 404
+        let (code, _) = http_req(t.addr, "GET", "/api/fleet/bX/recordings", None).await;
+        assert_eq!(code, 404);
+        t.shutdown().await;
+        let _ = std::fs::remove_dir_all(&recdir);
+    }
+
+    /// 桥删除时录像文件保留 (FR-19 硬性要求)。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn record_bridge_delete_keeps_files() {
+        let t = spawn_mgr(None, None).await;
+        let recdir = temp_recdir("keep");
+        t.mgr.set_recordings_dir(recdir.clone());
+        fleet_create_ok(
+            t.addr,
+            r#"{"name":"删桥桥","listen":"127.0.0.1:0","autoOpen":false}"#,
+        )
+        .await;
+        let b = t.mgr.get("b1").unwrap();
+        let (txq_tx, _txq_rx) = std_mpsc::channel::<Vec<u8>>();
+        b.ctx.set_tx(txq_tx);
+        let (code, _) = http_req(t.addr, "POST", "/api/fleet/b1/record/start", None).await;
+        assert_eq!(code, 200);
+        b.ctx.bc_tx.send(b"keep".to_vec()).unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let (code, resp) = http_req(t.addr, "POST", "/api/fleet/b1/record/stop", None).await;
+        assert_eq!(code, 200, "{resp}");
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        let file = v["file"].as_str().unwrap().to_string();
+        // 删除桥 (录制已停; 若未停也会随 stop_tx 自动收尾)
+        let (code, _) = http_req(t.addr, "POST", "/api/fleet/b1/delete", None).await;
+        assert_eq!(code, 200);
+        assert!(
+            recdir.join(&file).is_file(),
+            "桥删除后录像文件必须保留: {file}"
+        );
+        t.shutdown().await;
+        let _ = std::fs::remove_dir_all(&recdir);
+    }
+
+    /// 删录像端点 (ADR-24⑥): 正常删除 {"ok":true} 且列表同步; 路径穿越/不存在 → 400。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recordings_delete_and_traversal_rejected() {
+        let t = spawn_mgr(None, None).await;
+        let recdir = temp_recdir("del");
+        t.mgr.set_recordings_dir(recdir.clone());
+        fleet_create_ok(
+            t.addr,
+            r#"{"name":"删录像桥","listen":"127.0.0.1:0","autoOpen":false}"#,
+        )
+        .await;
+        std::fs::create_dir_all(&recdir).unwrap();
+        std::fs::write(
+            recdir.join("b1-20260101-000000.jsonl"),
+            "{\"ts\":0,\"dir\":\"tx\",\"hex\":\"01\"}\n",
+        )
+        .unwrap();
+        // 布饵: 录像目录外文件 (穿越目标) —— 删除后必须仍在
+        let bait = std::env::temp_dir().join(format!("sh_rec_del_bait_{}.txt", std::process::id()));
+        std::fs::write(&bait, "do not delete").unwrap();
+
+        let (code, resp) = http_req(
+            t.addr,
+            "POST",
+            "/api/fleet/b1/recordings/delete",
+            Some(r#"{"file":"b1-20260101-000000.jsonl"}"#),
+        )
+        .await;
+        assert_eq!(code, 200, "{resp}");
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["ok"], true, "{resp}");
+        assert!(
+            !recdir.join("b1-20260101-000000.jsonl").exists(),
+            "录像已删"
+        );
+        let (code, resp) = http_req(t.addr, "GET", "/api/fleet/b1/recordings", None).await;
+        assert_eq!(code, 200);
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["recordings"].as_array().unwrap().len(), 0, "{resp}");
+
+        // 穿越拒绝 (含反斜杠/URL 编码变体) + 不存在文件 + 坏 body → 400
+        for bad in [
+            r#"{"file":"../sh_rec_del_bait.txt"}"#,
+            r#"{"file":"..\\sh_rec_del_bait.txt"}"#,
+            r#"{"file":"missing.jsonl"}"#,
+            r#"{}"#,
+            "not json",
+        ] {
+            let (code, resp) =
+                http_req(t.addr, "POST", "/api/fleet/b1/recordings/delete", Some(bad)).await;
+            assert_eq!(code, 400, "body={bad} 应 400: {resp}");
+        }
+        assert!(bait.is_file(), "目录外饵文件不得被波及");
+        // 不存在的桥 → 404
+        let (code, _) = http_req(
+            t.addr,
+            "POST",
+            "/api/fleet/bX/recordings/delete",
+            Some(r#"{"file":"b1.jsonl"}"#),
+        )
+        .await;
+        assert_eq!(code, 404);
+        let _ = std::fs::remove_file(&bait);
+        t.shutdown().await;
+        let _ = std::fs::remove_dir_all(&recdir);
+    }
+
+    /// 回放: 假串口注入 (set_tx 队列) 收回放字节; **只回放 tx 行** (ADR-24⑥,
+    /// rx 行不回注); 原始时序按倍率缩放 (speed=1 下界 + speed=10 上界双向钉住),
+    /// 字节与顺序逐帧一致; 首帧立即发 (绝对 epoch ms ts 兼容, QA §3 A1)。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn replay_bytes_and_timing_via_fake_serial() {
+        let t = spawn_mgr(None, None).await;
+        let recdir = temp_recdir("replay");
+        t.mgr.set_recordings_dir(recdir.clone());
+        fleet_create_ok(
+            t.addr,
+            r#"{"name":"回放桥","listen":"127.0.0.1:0","autoOpen":false}"#,
+        )
+        .await;
+        let b = t.mgr.get("b1").unwrap();
+        // 假录像: rx+tx 混合 (tx@0 / rx@400 / tx@800) —— tx-only 过滤的试金石
+        std::fs::create_dir_all(&recdir).unwrap();
+        let rec = recdir.join("b1-20260101-000000.jsonl");
+        std::fs::write(
+            &rec,
+            "{\"ts\":0,\"dir\":\"tx\",\"hex\":\"aa\"}\n\
+             {\"ts\":400,\"dir\":\"rx\",\"hex\":\"bbcc\"}\n\
+             {\"ts\":800,\"dir\":\"tx\",\"hex\":\"ddeeff00\"}\n",
+        )
+        .unwrap();
+
+        // 串口未打开 → 400
+        let (code, resp) = http_req(
+            t.addr,
+            "POST",
+            "/api/fleet/b1/replay",
+            Some(r#"{"file":"b1-20260101-000000.jsonl"}"#),
+        )
+        .await;
+        assert_eq!(code, 400, "串口未 open 应拒绝: {resp}");
+        b.hub.set_phase(Phase::Open); // 测试直置 open (生产由监督任务迁移)
+
+        let (txq_tx, txq_rx) = std_mpsc::channel::<Vec<u8>>();
+        b.ctx.set_tx(txq_tx);
+
+        // speed=1: 首帧 (tx@0) 立即到; 次帧 (tx@800, 与首帧 tx 行间差 800ms)
+        // 应在 >=600ms 后; rx 行 (bbcc) 绝不出现在假串口 (tx-only 过滤)
+        let t0 = Instant::now();
+        let (code, resp) = http_req(
+            t.addr,
+            "POST",
+            "/api/fleet/b1/replay",
+            Some(r#"{"file":"b1-20260101-000000.jsonl","speed":1.0,"loop":false}"#),
+        )
+        .await;
+        assert_eq!(code, 200, "{resp}");
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["file"], "b1-20260101-000000.jsonl");
+        assert_eq!(v["speed"], 1.0);
+        assert_eq!(v["loop"], false);
+        let f1 = txq_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        let t1 = t0.elapsed();
+        let f2 = txq_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        let t2 = t0.elapsed();
+        assert_eq!(f1, b"\xaa");
+        assert_eq!(f2, b"\xdd\xee\xff\x00");
+        assert!(
+            t2 - t1 >= Duration::from_millis(600),
+            "800ms tx 行间差 speed=1 不得瞬发, 实际 {t2:?} - {t1:?}"
+        );
+        // rx 行不回注: 自然结束后守窗无任何多余字节 (尤其 bbcc)
+        assert!(
+            txq_rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "tx-only: 守窗内不得再收到帧 (rx 行 bbcc 不得回注)"
+        );
+        // 回放自然结束后 replay 槽位归 null
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let (_, resp) = http_req(t.addr, "GET", "/api/fleet/b1", None).await;
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        assert!(v["bridge"]["replay"].is_null(), "{resp}");
+
+        // speed=10: 全部 tx 帧应在 500ms 内到齐 (钉住倍率生效; 未缩放需 800ms)
+        let t0 = Instant::now();
+        let (code, _) = http_req(
+            t.addr,
+            "POST",
+            "/api/fleet/b1/replay",
+            Some(r#"{"file":"b1-20260101-000000.jsonl","speed":10}"#),
+        )
+        .await;
+        assert_eq!(code, 200);
+        for want in [&b"\xaa"[..], b"\xdd\xee\xff\x00"] {
+            let got = txq_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+            assert_eq!(got, want);
+        }
+        let total = t0.elapsed();
+        assert!(
+            total < Duration::from_millis(500),
+            "speed=10 应把 800ms 压到 ~80ms, 实际 {total:?}"
+        );
+
+        // loop=true: 进度经 detail.replay 可见, replay/stop 可停
+        let (code, _) = http_req(
+            t.addr,
+            "POST",
+            "/api/fleet/b1/replay",
+            Some(r#"{"file":"b1-20260101-000000.jsonl","speed":10,"loop":true}"#),
+        )
+        .await;
+        assert_eq!(code, 200);
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let (_, resp) = http_req(t.addr, "GET", "/api/fleet/b1", None).await;
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            v["bridge"]["replay"]["loop"], true,
+            "回放期间状态可见: {resp}"
+        );
+        assert_eq!(v["bridge"]["replay"]["speed"], 10.0);
+        assert!(
+            v["bridge"]["replay"]["frames"].as_u64().unwrap() >= 2,
+            "{resp}"
+        );
+        let (code, _) = http_req(t.addr, "POST", "/api/fleet/b1/replay/stop", None).await;
+        assert_eq!(code, 200);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let (_, resp) = http_req(t.addr, "GET", "/api/fleet/b1", None).await;
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        assert!(
+            v["bridge"]["replay"].is_null(),
+            "停止后 replay 归 null: {resp}"
+        );
+        // 回放字节确实走了 tx 队列 (假串口收到 loop 重复帧); 单轮恒为 2 帧
+        // (tx-only), 超过 2 即证明发生了循环
+        let mut got = 0usize;
+        while txq_rx.recv_timeout(Duration::from_millis(50)).is_ok() {
+            got += 1;
+        }
+        assert!(got > 2, "loop 回放应超过单轮 (2 tx 帧), 实际 {got}");
+        t.shutdown().await;
+        let _ = std::fs::remove_dir_all(&recdir);
+    }
+
+    /// 绝对 epoch ms ts 的手工录像 (QA §3 A1): 首帧立即发 (不按首行 ts 绝对时刻
+    /// 等待), 行间差按时序缩放 —— 回放须在秒级自然完成而非永久卡死。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn replay_accepts_absolute_epoch_ts() {
+        let t = spawn_mgr(None, None).await;
+        let recdir = temp_recdir("epoch");
+        t.mgr.set_recordings_dir(recdir.clone());
+        fleet_create_ok(
+            t.addr,
+            r#"{"name":"绝对ts桥","listen":"127.0.0.1:0","autoOpen":false}"#,
+        )
+        .await;
+        let b = t.mgr.get("b1").unwrap();
+        b.hub.set_phase(Phase::Open);
+        let (txq_tx, txq_rx) = std_mpsc::channel::<Vec<u8>>();
+        b.ctx.set_tx(txq_tx);
+        // 绝对 epoch ms: now / now+200 / now+400
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        std::fs::create_dir_all(&recdir).unwrap();
+        std::fs::write(
+            recdir.join("b1-epoch.jsonl"),
+            format!(
+                "{{\"ts\":{},\"dir\":\"tx\",\"hex\":\"0101\"}}\n\
+                 {{\"ts\":{},\"dir\":\"tx\",\"hex\":\"0202\"}}\n\
+                 {{\"ts\":{},\"dir\":\"tx\",\"hex\":\"0303\"}}\n",
+                now,
+                now + 200,
+                now + 400
+            ),
+        )
+        .unwrap();
+        let t0 = Instant::now();
+        let (code, resp) = http_req(
+            t.addr,
+            "POST",
+            "/api/fleet/b1/replay",
+            Some(r#"{"file":"b1-epoch.jsonl","speed":1.0,"loop":false}"#),
+        )
+        .await;
+        assert_eq!(code, 200, "{resp}");
+        for want in [&b"\x01\x01"[..], b"\x02\x02", b"\x03\x03"] {
+            let got = txq_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(got, want);
+        }
+        let total = t0.elapsed();
+        assert!(
+            total < Duration::from_secs(4),
+            "绝对 ts 首帧须立即发, 回放秒级完成 (实际 {total:?}); 卡死即回归"
+        );
+        assert!(
+            total >= Duration::from_millis(250),
+            "行间差 400ms 须按时序铺开 (实际 {total:?})"
+        );
+        t.shutdown().await;
+        let _ = std::fs::remove_dir_all(&recdir);
+    }
+
+    /// 回放参数校验与路径穿越拒绝 (FR-19 安全)。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn replay_param_validation_and_traversal_rejected() {
+        let t = spawn_mgr(None, None).await;
+        let recdir = temp_recdir("valid");
+        t.mgr.set_recordings_dir(recdir.clone());
+        fleet_create_ok(
+            t.addr,
+            r#"{"name":"校验桥","listen":"127.0.0.1:0","autoOpen":false}"#,
+        )
+        .await;
+        let b = t.mgr.get("b1").unwrap();
+        std::fs::create_dir_all(&recdir).unwrap();
+        std::fs::write(
+            recdir.join("b1-ok.jsonl"),
+            "{\"ts\":0,\"dir\":\"tx\",\"hex\":\"01\"}\n",
+        )
+        .unwrap();
+        b.hub.set_phase(Phase::Open);
+        // speed 越界 (FR-19: 0.5~10)
+        for bad_speed in ["0.1", "20", "-1"] {
+            let (code, resp) = http_req(
+                t.addr,
+                "POST",
+                "/api/fleet/b1/replay",
+                Some(&format!(r#"{{"file":"b1-ok.jsonl","speed":{bad_speed}}}"#)),
+            )
+            .await;
+            assert_eq!(code, 400, "speed={bad_speed} 应 400: {resp}");
+        }
+        // 文件不存在 / 空 body / 坏 JSON
+        for bad_body in [
+            r#"{"file":"missing.jsonl"}"#,
+            r#"{"file":"a/b.jsonl"}"#,
+            r#"{}"#,
+            r#"not json"#,
+        ] {
+            let (code, _) = http_req(t.addr, "POST", "/api/fleet/b1/replay", Some(bad_body)).await;
+            assert_eq!(code, 400, "body={bad_body} 应 400");
+        }
+        // 路径穿越拒绝 (FR-19: file 必须解析为录像目录内已有文件)
+        for bad_file in [
+            "../../Cargo.toml",
+            "..\\Cargo.toml",
+            "../serialhub/Cargo.toml",
+            "%2e%2e%2fb1-ok.jsonl",
+            "C:\\Windows\\notepad.exe",
+        ] {
+            let body = json!({"file": bad_file}).to_string();
+            let (code, resp) = http_req(t.addr, "POST", "/api/fleet/b1/replay", Some(&body)).await;
+            assert_eq!(code, 400, "穿越 \"{bad_file}\" 应 400: {resp}");
+        }
+        // 回放互斥: loop 回放进行中再回放 → 400
+        let (code, _) = http_req(
+            t.addr,
+            "POST",
+            "/api/fleet/b1/replay",
+            Some(r#"{"file":"b1-ok.jsonl","speed":1,"loop":true}"#),
+        )
+        .await;
+        assert_eq!(code, 200);
+        let (code, resp) = http_req(
+            t.addr,
+            "POST",
+            "/api/fleet/b1/replay",
+            Some(r#"{"file":"b1-ok.jsonl"}"#),
+        )
+        .await;
+        assert_eq!(code, 400, "回放进行中应 400: {resp}");
+        let (code, _) = http_req(t.addr, "POST", "/api/fleet/b1/replay/stop", None).await;
+        assert_eq!(code, 200);
+        t.shutdown().await;
+        let _ = std::fs::remove_dir_all(&recdir);
+    }
+
+    // ---- FR-22: 配置导入导出 (ADR-24 B4) ----
+
+    fn rec_json(id: &str, listen: &str) -> Value {
+        json!({
+            "id": id,
+            "name": format!("导入-{id}"),
+            "autoOpen": false,
+            "autoReconnect": true,
+            "maxClients": 0,
+            "listen": listen,
+            "serial": {
+                "port": "", "baud": 115200, "dataBits": 8,
+                "parity": "N", "stopBits": 2, "flow": "none"
+            },
+        })
+    }
+
+    /// 导出形状 (version/bridges + attachment 头) + 导出体可直接回导 (merge 全跳过)。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn export_shape_and_roundtrip() {
+        let t = spawn_mgr(None, None).await;
+        fleet_create_ok(
+            t.addr,
+            r#"{"name":"导1","listen":"127.0.0.1:0","autoOpen":false}"#,
+        )
+        .await;
+        fleet_create_ok(
+            t.addr,
+            r#"{"name":"导2","listen":"127.0.0.1:0","autoOpen":false}"#,
+        )
+        .await;
+        // 原始响应取头部 (http_req 只回 body): 断言 Content-Disposition attachment
+        let mut s = TcpStream::connect(t.addr).await.unwrap();
+        s.write_all(b"GET /api/fleet/export HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut resp = Vec::new();
+        s.read_to_end(&mut resp).await.unwrap();
+        let text = String::from_utf8_lossy(&resp).to_string();
+        assert!(text.contains("HTTP/1.1 200"), "{text}");
+        assert!(
+            text.to_lowercase()
+                .contains("content-disposition: attachment; filename=\"fleet.json\""),
+            "须为 attachment 下载: {text}"
+        );
+        assert!(text.contains("application/json"), "{text}");
+        let body = text.split_once("\r\n\r\n").unwrap().1;
+        let v: Value = serde_json::from_str(body).expect("导出体是合法 JSON");
+        assert_eq!(v["version"], 1, "{v}");
+        assert_eq!(v["bridges"].as_array().unwrap().len(), 2, "{v}");
+        // POST 同路由双受理 (ADR-24⑥: UI 先 POST 后 GET), 响应体与 GET 一致
+        let (code, post_body) = http_req(t.addr, "POST", "/api/fleet/export", None).await;
+        assert_eq!(code, 200, "{post_body}");
+        assert_eq!(post_body, body, "POST 导出体须与 GET 完全一致");
+        let row = &v["bridges"][0];
+        for key in [
+            "id",
+            "name",
+            "autoOpen",
+            "autoReconnect",
+            "maxClients",
+            "listen",
+            "serial",
+        ] {
+            assert!(row.get(key).is_some(), "导出桥行缺 {key}: {row}");
+        }
+        // 回导 (merge): id 全部冲突 → imported=0 skipped=2 (形状可被导入器接受)
+        let import_body = json!({"mode": "merge", "json": v}).to_string();
+        let (code, resp) = http_req(t.addr, "POST", "/api/fleet/import", Some(&import_body)).await;
+        assert_eq!(code, 200, "{resp}");
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["imported"], 0, "{resp}");
+        assert_eq!(v["skipped"], 2, "{resp}");
+        t.shutdown().await;
+    }
+
+    /// merge=按 id 合并 (冲突跳过计数), replace=整表替换 (运行中桥先停);
+    /// 非法 schema 整体 400。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn import_merge_replace_and_schema_rejects() {
+        let t = spawn_mgr(None, None).await;
+        fleet_create_ok(
+            t.addr,
+            r#"{"name":"旧1","listen":"127.0.0.1:0","autoOpen":false}"#,
+        )
+        .await;
+        fleet_create_ok(
+            t.addr,
+            r#"{"name":"旧2","listen":"127.0.0.1:0","autoOpen":false}"#,
+        )
+        .await;
+
+        // merge: b1 冲突跳过, b9 新建 → imported=1 skipped=1; b9 即建即启
+        let body = json!({
+            "mode": "merge",
+            "json": {"version": 1, "bridges": [rec_json("b1", "127.0.0.1:0"), rec_json("b9", "127.0.0.1:0")]}
+        })
+        .to_string();
+        let (code, resp) = http_req(t.addr, "POST", "/api/fleet/import", Some(&body)).await;
+        assert_eq!(code, 200, "{resp}");
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["imported"], 1, "{resp}");
+        assert_eq!(v["skipped"], 1, "{resp}");
+        let (_, resp) = http_req(t.addr, "GET", "/api/fleet/b9", None).await;
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["bridge"]["running"], true, "导入桥数据面应启动: {resp}");
+        assert_eq!(v["bridge"]["name"], "导入-b9");
+
+        // replace: 整表换成 b5 (运行中的旧桥先停后清) → imported=1 skipped=0
+        let body = json!({
+            "mode": "replace",
+            "json": {"version": 1, "bridges": [rec_json("b5", "127.0.0.1:0")]}
+        })
+        .to_string();
+        let (code, resp) = http_req(t.addr, "POST", "/api/fleet/import", Some(&body)).await;
+        assert_eq!(code, 200, "{resp}");
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["imported"], 1, "{resp}");
+        assert_eq!(v["skipped"], 0, "{resp}");
+        let (_, resp) = http_req(t.addr, "GET", "/api/fleet", None).await;
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        let arr = v["bridges"].as_array().unwrap();
+        assert_eq!(arr.len(), 1, "replace 应整表替换: {resp}");
+        assert_eq!(arr[0]["id"], "b5");
+        assert_eq!(arr[0]["running"], true);
+
+        // 非法 schema → 400 (mode 非法 / 缺 version / version 不支持 / 桥缺字段 /
+        // 串口配置越界 / json 非对象)
+        let mut bad_serial = rec_json("b7", "127.0.0.1:0");
+        bad_serial["serial"]["baud"] = json!(50); // 越界 (<110)
+        let cases = [
+            r#"{"mode":"upsert","json":{"version":1,"bridges":[]}}"#.to_string(),
+            r#"{"mode":"merge","json":{"bridges":[]}}"#.to_string(),
+            r#"{"mode":"merge","json":{"version":2,"bridges":[]}}"#.to_string(),
+            r#"{"mode":"merge","json":{"version":1,"bridges":[{"id":"x","name":"n"}]}}"#
+                .to_string(),
+            json!({"mode":"replace","json":{"version":1,"bridges":[bad_serial]}}).to_string(),
+        ];
+        for (i, bad) in cases.iter().enumerate() {
+            let (code, resp) = http_req(t.addr, "POST", "/api/fleet/import", Some(bad)).await;
+            assert_eq!(code, 400, "case{i} 应 400: {resp}");
+        }
+        let mut bad_json = json!({"mode":"merge","json":{"version":1,"bridges":[]}});
+        bad_json["json"] = json!(5); // json 非对象
+        let (code, resp) = http_req(
+            t.addr,
+            "POST",
+            "/api/fleet/import",
+            Some(&bad_json.to_string()),
+        )
+        .await;
+        assert_eq!(code, 400, "json 非对象应 400: {resp}");
+        // 校验失败不落库: 桥表仍是 replace 后的 1 座
+        let (_, resp) = http_req(t.addr, "GET", "/api/fleet", None).await;
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["bridges"].as_array().unwrap().len(), 1);
+        t.shutdown().await;
+    }
+
+    // ---- FR-20: TCP 旁路转发 (ADR-24② B2) ----
+
+    /// RX 字节经 bc_tx (与 WS/tap 同源) 单向转发到本地 TCP listener;
+    /// forwardConnected 随连接状态回显; 目标校验 create/config 双路 400。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn forward_rx_bytes_to_local_listener() {
+        let t = spawn_mgr(None, None).await;
+        fleet_create_ok(
+            t.addr,
+            r#"{"name":"转发桥","listen":"127.0.0.1:0","autoOpen":false}"#,
+        )
+        .await;
+        let b = t.mgr.get("b1").unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = listener.local_addr().unwrap().to_string();
+
+        // 非法目标 400 (create 与 config 双路)
+        let (code, _) = http_req(
+            t.addr,
+            "POST",
+            "/api/fleet",
+            Some(r#"{"name":"坏目标","listen":"127.0.0.1:0","forwardTcp":"host:abc"}"#),
+        )
+        .await;
+        assert_eq!(code, 400, "forwardTcp 端口非法应 400");
+        let (code, resp) = http_req(
+            t.addr,
+            "POST",
+            "/api/fleet/b1/config",
+            Some(r#"{"forwardTcp":"host:abc"}"#),
+        )
+        .await;
+        assert_eq!(code, 400, "config forwardTcp 端口非法应 400: {resp}");
+
+        // 配置合法目标 → 会话热生效连接
+        let body = json!({"forwardTcp": target}).to_string();
+        let (code, resp) = http_req(t.addr, "POST", "/api/fleet/b1/config", Some(&body)).await;
+        assert_eq!(code, 200, "{resp}");
+        let (mut conn, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+            .await
+            .expect("连接超时")
+            .unwrap();
+        let mut connected = false;
+        for _ in 0..50 {
+            let (_, resp) = http_req(t.addr, "GET", "/api/fleet/b1", None).await;
+            let v: Value = serde_json::from_str(&resp).unwrap();
+            if v["bridge"]["forwardConnected"].as_bool() == Some(true) {
+                connected = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(connected, "forwardConnected 应为 true");
+
+        // RX 注入 → listener 收到原样字节
+        b.ctx.bc_tx.send(b"FORWARD-1".to_vec()).unwrap();
+        let mut buf = [0u8; 9];
+        tokio::time::timeout(Duration::from_secs(5), conn.read_exact(&mut buf))
+            .await
+            .expect("读转发字节超时")
+            .unwrap();
+        assert_eq!(&buf, b"FORWARD-1");
+        t.shutdown().await;
+    }
+
+    /// 对端断开后 3s 节拍自动重连; 配置移除 (改空) 即断开且不再转发。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn forward_reconnect_after_drop_and_removal_stops() {
+        let t = spawn_mgr(None, None).await;
+        fleet_create_ok(
+            t.addr,
+            r#"{"name":"重连桥","listen":"127.0.0.1:0","autoOpen":false}"#,
+        )
+        .await;
+        let b = t.mgr.get("b1").unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = listener.local_addr().unwrap().to_string();
+        let body = json!({"forwardTcp": target}).to_string();
+        let (code, _) = http_req(t.addr, "POST", "/api/fleet/b1/config", Some(&body)).await;
+        assert_eq!(code, 200);
+
+        let (conn1, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        drop(conn1); // 对端断开
+
+        // 注入触发对死连接的写失败 → 3s 节拍内重连; accept 轮询等第二次连接
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut conn2 = None;
+        while Instant::now() < deadline {
+            b.ctx.bc_tx.send(b"KICK".to_vec()).unwrap();
+            match tokio::time::timeout(Duration::from_millis(300), listener.accept()).await {
+                Ok(Ok((c, _))) => {
+                    conn2 = Some(c);
+                    break;
+                }
+                _ => tokio::time::sleep(Duration::from_millis(100)).await,
+            }
+        }
+        let mut conn2 = conn2.expect("10s 内未重连 (断线重连回归)");
+
+        // 新连接上继续收到转发字节 (KICK 积压帧可能先出站, 扫描标记)
+        b.ctx.bc_tx.send(b"RECONN-OK".to_vec()).unwrap();
+        let mut got = Vec::new();
+        let marker = b"RECONN-OK".to_vec();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let mut chunk = [0u8; 64];
+            while !got.windows(9).any(|w| w == marker.as_slice()) {
+                let n = conn2.read(&mut chunk).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                got.extend_from_slice(&chunk[..n]);
+            }
+        })
+        .await
+        .expect("重连后读转发字节超时");
+        assert!(
+            got.windows(9).any(|w| w == marker.as_slice()),
+            "重连连接上应收到 RECONN-OK: {got:?}"
+        );
+
+        // 配置移除 (改空) → 立即断开 + 状态回 false
+        let (code, _) = http_req(
+            t.addr,
+            "POST",
+            "/api/fleet/b1/config",
+            Some(r#"{"forwardTcp":""}"#),
+        )
+        .await;
+        assert_eq!(code, 200);
+        let mut closed = false;
+        for _ in 0..30 {
+            let (_, resp) = http_req(t.addr, "GET", "/api/fleet/b1", None).await;
+            let v: Value = serde_json::from_str(&resp).unwrap();
+            if v["bridge"]["forwardConnected"].as_bool() == Some(false)
+                && v["bridge"]["forwardTcp"] == ""
+            {
+                closed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(
+            closed,
+            "移除配置后 forwardConnected 应 false 且 forwardTcp 空"
+        );
+        // 对端应看到连接关闭 (EOF)
+        let eof = tokio::time::timeout(Duration::from_secs(3), async {
+            let mut probe = [0u8; 1];
+            let _ = conn2.read(&mut probe).await; // Ok(0) = EOF
+        })
+        .await;
+        assert!(eof.is_ok(), "3s 内对端应观察到连接断开 (EOF)");
+        // 移除后注入不再出站
+        b.ctx.bc_tx.send(b"AFTER-OFF".to_vec()).unwrap();
+        let mut probe = [0u8; 1];
+        let got = tokio::time::timeout(Duration::from_millis(400), conn2.read(&mut probe)).await;
+        assert!(
+            matches!(got, Err(_) | Ok(Ok(0))),
+            "配置移除后不得再有转发字节"
+        );
+        t.shutdown().await;
+    }
+
+    /// 配置热改目标: 旧连接断开, 新连接按新值建立 (运行中改配置语义)。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn forward_target_hot_swap() {
+        let t = spawn_mgr(None, None).await;
+        fleet_create_ok(
+            t.addr,
+            r#"{"name":"换向桥","listen":"127.0.0.1:0","autoOpen":false}"#,
+        )
+        .await;
+        let b = t.mgr.get("b1").unwrap();
+        let l1 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let l2 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let body = json!({"forwardTcp": l1.local_addr().unwrap().to_string()}).to_string();
+        let (code, _) = http_req(t.addr, "POST", "/api/fleet/b1/config", Some(&body)).await;
+        assert_eq!(code, 200);
+        let (mut conn1, _) = tokio::time::timeout(Duration::from_secs(5), l1.accept())
+            .await
+            .unwrap()
+            .unwrap();
+
+        // 热改到 l2
+        let body = json!({"forwardTcp": l2.local_addr().unwrap().to_string()}).to_string();
+        let (code, _) = http_req(t.addr, "POST", "/api/fleet/b1/config", Some(&body)).await;
+        assert_eq!(code, 200);
+        let (mut conn2, _) = tokio::time::timeout(Duration::from_secs(5), l2.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        // 旧连接应被断开 (EOF)
+        let mut probe = [0u8; 1];
+        let n1 = tokio::time::timeout(Duration::from_secs(3), conn1.read(&mut probe)).await;
+        assert!(matches!(n1, Ok(Ok(0)) | Err(_)), "旧连接应断开: {n1:?}");
+        // 新连接收到后续字节
+        b.ctx.bc_tx.send(b"NEW-TARGET".to_vec()).unwrap();
+        let mut buf = [0u8; 10];
+        tokio::time::timeout(Duration::from_secs(5), conn2.read_exact(&mut buf))
+            .await
+            .expect("新目标读转发字节超时")
+            .unwrap();
+        assert_eq!(&buf, b"NEW-TARGET");
         t.shutdown().await;
     }
 }

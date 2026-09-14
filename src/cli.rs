@@ -29,6 +29,8 @@ SerialHub — 串口 <-> WebSocket 桥接管理器 (内嵌 Web 控制台)
   --fleet <路径>     桥清单文件路径 (默认 %APPDATA%\\SerialHub\\fleet.json; FR-10b)
   --no-fleet         关闭桥清单持久化 (FR-10b)
   --themes-dir <路径> 主题目录 (FR-14, 默认 exe 旁 themes/; 不存在则启动时创建并写入内置主题)
+  --recordings-dir <路径> 录像目录 (FR-19, 默认 exe 旁 recordings/)
+  --log-file <路径>  运行日志文件 (FR-21, 滚动 5MB×3 份; 默认不开)
   --headless         纯 CLI 前台模式: 无窗口无托盘 (自动化测试与脚本场景, FR-8)
   --gui              原生窗口 + 托盘模式 (默认; 与 --headless 互斥)
   -h, --help         显示本帮助
@@ -65,6 +67,10 @@ pub struct Cli {
     pub auto_reconnect: bool,
     /// FR-14: 主题目录 (None = exe 旁 themes/, 运行时由 themes::default_themes_dir 兜底)。
     pub themes_dir: Option<PathBuf>,
+    /// FR-19: 录像目录 (None = exe 旁 recordings/, 运行时由 record::default_recordings_dir 兜底)。
+    pub recordings_dir: Option<PathBuf>,
+    /// FR-21: 运行日志文件 (None = 不开, 向后兼容)。
+    pub log_file: Option<PathBuf>,
     /// FR-13: 本次启动是否显式给出 --addr (显式地址优先于 fleet.json [manager] 恢复)。
     pub addr_explicit: bool,
 }
@@ -95,6 +101,8 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
     let mut no_fleet = false;
     let mut auto_reconnect = true; // FR-12: 默认开启自动重连
     let mut themes_dir: Option<PathBuf> = None; // FR-14: 默认 exe 旁 themes/
+    let mut recordings_dir: Option<PathBuf> = None; // FR-19: 默认 exe 旁 recordings/
+    let mut log_file: Option<PathBuf> = None; // FR-21: 默认不开
     let mut addr_explicit = false; // FR-13: --addr 是否显式给出
 
     let mut i = 0usize;
@@ -164,6 +172,22 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
             }
             "--reconnect" => auto_reconnect = true,
             "--no-reconnect" => auto_reconnect = false,
+            "--recordings-dir" => {
+                let v = val!();
+                let t = v.trim().to_string();
+                if t.is_empty() {
+                    return Err("--recordings-dir 不能为空字符串".into());
+                }
+                recordings_dir = Some(PathBuf::from(t));
+            }
+            "--log-file" => {
+                let v = val!();
+                let t = v.trim().to_string();
+                if t.is_empty() {
+                    return Err("--log-file 不能为空字符串".into());
+                }
+                log_file = Some(PathBuf::from(t));
+            }
             "--headless" => headless = true,
             "--gui" => gui_flag = true,
             other => return Err(format!("未知参数 \"{other}\"")),
@@ -194,6 +218,8 @@ pub fn parse(args: &[String]) -> Result<Cli, String> {
         no_fleet,
         auto_reconnect,
         themes_dir,
+        recordings_dir,
+        log_file,
         addr_explicit,
     })
 }

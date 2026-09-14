@@ -17,9 +17,12 @@ mod browser;
 mod cli;
 mod config;
 mod fleet;
+mod forward;
 mod gui;
 mod hub;
 mod icons;
+mod logging;
+mod record;
 mod serial;
 mod service;
 mod stats;
@@ -42,6 +45,23 @@ fn main() {
             std::process::exit(2);
         }
     };
+
+    // FR-21: 文件日志 (--log-file; 默认不开)。在分派 GUI/headless 前 init,
+    // 两种形态同样生效; 失败 = 配置错误, 直接报错退出 (不静默吞)。
+    if let Some(p) = &cli.log_file {
+        if let Err(e) = logging::init(p) {
+            eprintln!("serialhub: {e}");
+            std::process::exit(2);
+        }
+        logging::write(
+            "info",
+            &format!(
+                "SerialHub v{} 日志文件启用 ({})",
+                env!("CARGO_PKG_VERSION"),
+                p.display()
+            ),
+        );
+    }
 
     if cli.list_ports {
         let ports = serial::list_ports();
