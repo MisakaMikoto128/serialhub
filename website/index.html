@@ -20,29 +20,29 @@
      ═══════════════════════════════════════════════════════════════════ -->
 <script>
 const RELEASE = {
-  version: "v1.7.1",
+  version: "v1.8.1",
   date: "2026-09-14",
   repo: "https://github.com/MisakaMikoto128/serialhub",
   releases: "https://github.com/MisakaMikoto128/serialhub/releases",
   changelog: "https://github.com/MisakaMikoto128/serialhub/blob/main/CHANGELOG.md",
   platforms: {
     windows: {
-      file: "serialhub-v1.7.1-windows-x86_64.zip",
+      file: "serialhub-v1.8.1-windows-x86_64.zip",
       spec: "Windows x86_64 · zip · 约 1.6 MB",
-      sha256: "788fec72613b57e0a7e8919e5a86b459eef23bbe84d71eb771ed270455d2dfe0",
-      url: "https://github.com/MisakaMikoto128/serialhub/releases/download/v1.7.1/serialhub-v1.7.1-windows-x86_64.zip"
+      sha256: "211743fef42d9368ac1666edb939b1166da94cf3a300a7a41bae057d08d699c9",
+      url: "https://github.com/MisakaMikoto128/serialhub/releases/download/v1.8.1/serialhub-v1.8.1-windows-x86_64.zip"
     },
     linux: {
-      file: "serialhub-v1.7.1-linux-x86_64.tar.gz",
-      spec: "Linux x86_64 · tar.gz · 约 1.9 MB",
-      sha256: "b242b8bd7527d4fecb0f36d0cf6ef42bebb4d4c6c70f3baced0231cab7575819",
-      url: "https://github.com/MisakaMikoto128/serialhub/releases/download/v1.7.1/serialhub-v1.7.1-linux-x86_64.tar.gz"
+      file: "serialhub-v1.8.1-linux-x86_64.tar.gz",
+      spec: "Linux x86_64 · tar.gz · 约 2.0 MB",
+      sha256: "6697f96f6e52492466a7953e78f19f88469caf180f0e5a960dd492560d7f2b02",
+      url: "https://github.com/MisakaMikoto128/serialhub/releases/download/v1.8.1/serialhub-v1.8.1-linux-x86_64.tar.gz"
     },
     macos: {
-      file: "serialhub-v1.7.1-macos-aarch64-unsigned.tar.gz",
+      file: "serialhub-v1.8.1-macos-aarch64-unsigned.tar.gz",
       spec: "macOS Apple Silicon · tar.gz · 约 1.9 MB · 未签名",
-      sha256: "250951d133fdcf1afa22746a1d740171c13144b6336ae1705970be5128c3ab5f",
-      url: "https://github.com/MisakaMikoto128/serialhub/releases/download/v1.7.1/serialhub-v1.7.1-macos-aarch64-unsigned.tar.gz"
+      sha256: "0c32ccb32d6bbe36c4157f8d4c5a701698053addb5d1337f7afe9443c5bba29c",
+      url: "https://github.com/MisakaMikoto128/serialhub/releases/download/v1.8.1/serialhub-v1.8.1-macos-aarch64-unsigned.tar.gz"
     }
   }
 };
@@ -213,6 +213,7 @@ a{color:var(--wh-accent)}
 @media (min-width:720px){.shot-grid{grid-template-columns:1fr 1fr}}
 .shot{display:block;border-radius:var(--wh-radius);overflow:hidden;background:var(--wh-panel)}
 .shot img{display:block;width:100%;height:auto}
+.video-demo video{display:block;width:100%;height:auto}
 figure{margin:0}
 figcaption{margin-top:var(--wh-sp-2);font-size:var(--wh-fs-small);line-height:1.6;color:var(--wh-muted)}
 
@@ -383,7 +384,7 @@ dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
       <a class="pill" href="#dl-linux">Linux</a>
       <a class="pill" href="#dl-macos">macOS</a>
     </p>
-    <p class="hero-ver">当前版本 <span data-rel="version">v1.7.1</span> · 三平台安装包</p>
+    <p class="hero-ver">当前版本 <span data-rel="version">v1.8.1</span> · 三平台安装包</p>
   </div>
 </header>
 
@@ -437,6 +438,12 @@ dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
         <p class="eyebrow">SCREENSHOTS</p>
         <h2>眼见为实</h2>
       </div>
+      <figure class="shot-main video-demo">
+        <div class="shot">
+          <video controls preload="none" width="1920" height="1080" poster="./assets/demo-poster.jpg" src="./assets/demo.mp4"></video>
+        </div>
+        <figcaption>60 秒视频演示：从下载、建桥到浏览器收发数据（含中文解说），点击播放。</figcaption>
+      </figure>
       <figure class="shot-main">
         <a class="shot" href="./assets/shot-dashboard.png" target="_blank" rel="noopener">
           <img src="./assets/shot-dashboard.png" alt="管理台总览" width="1256" height="814" loading="lazy">
@@ -485,7 +492,7 @@ dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
     <div class="container">
       <div class="sec-head">
         <p class="eyebrow">DOWNLOAD</p>
-        <h2>下载 SerialHub <span class="ver-pill" data-rel="version">v1.7.1</span></h2>
+        <h2>下载 SerialHub <span class="ver-pill" data-rel="version">v1.8.1</span></h2>
         <p class="dl-date"><span data-rel="date">2026-09-14</span> 发布</p>
       </div>
 
@@ -493,25 +500,25 @@ dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
         <article class="dl-card" id="dl-windows">
           <h3>Windows</h3>
           <p class="dl-spec" data-rel="spec-windows">Windows x86_64 · zip · 约 1.6 MB</p>
-          <p class="dl-file" data-rel="file-windows">serialhub-v1.7.1-windows-x86_64.zip</p>
+          <p class="dl-file" data-rel="file-windows">serialhub-v1.8.1-windows-x86_64.zip</p>
           <p class="dl-desc">适合 Windows 10/11 64 位，下载解压后双击 serialhub.exe。</p>
-          <a class="btn btn-primary dl-btn" data-rel="link-windows" href="https://github.com/MisakaMikoto128/serialhub/releases/download/v1.7.1/serialhub-v1.7.1-windows-x86_64.zip">下载 Windows 版</a>
+          <a class="btn btn-primary dl-btn" data-rel="link-windows" href="https://github.com/MisakaMikoto128/serialhub/releases/download/v1.8.1/serialhub-v1.8.1-windows-x86_64.zip">下载 Windows 版</a>
           <p class="sha-label">SHA256</p>
           <div class="sha-bar">
-            <code data-rel="sha-windows">788fec72613b57e0a7e8919e5a86b459eef23bbe84d71eb771ed270455d2dfe0</code>
+            <code data-rel="sha-windows">211743fef42d9368ac1666edb939b1166da94cf3a300a7a41bae057d08d699c9</code>
             <button type="button" class="copy-btn" aria-live="polite" aria-label="复制 SHA256 校验值">复制</button>
           </div>
         </article>
 
         <article class="dl-card" id="dl-linux">
           <h3>Linux</h3>
-          <p class="dl-spec" data-rel="spec-linux">Linux x86_64 · tar.gz · 约 1.9 MB</p>
-          <p class="dl-file" data-rel="file-linux">serialhub-v1.7.1-linux-x86_64.tar.gz</p>
+          <p class="dl-spec" data-rel="spec-linux">Linux x86_64 · tar.gz · 约 2.0 MB</p>
+          <p class="dl-file" data-rel="file-linux">serialhub-v1.8.1-linux-x86_64.tar.gz</p>
           <p class="dl-desc">适合主流 64 位发行版，脚本与服务器场景可用纯命令行模式。</p>
-          <a class="btn btn-primary dl-btn" data-rel="link-linux" href="https://github.com/MisakaMikoto128/serialhub/releases/download/v1.7.1/serialhub-v1.7.1-linux-x86_64.tar.gz">下载 Linux 版</a>
+          <a class="btn btn-primary dl-btn" data-rel="link-linux" href="https://github.com/MisakaMikoto128/serialhub/releases/download/v1.8.1/serialhub-v1.8.1-linux-x86_64.tar.gz">下载 Linux 版</a>
           <p class="sha-label">SHA256</p>
           <div class="sha-bar">
-            <code data-rel="sha-linux">b242b8bd7527d4fecb0f36d0cf6ef42bebb4d4c6c70f3baced0231cab7575819</code>
+            <code data-rel="sha-linux">6697f96f6e52492466a7953e78f19f88469caf180f0e5a960dd492560d7f2b02</code>
             <button type="button" class="copy-btn" aria-live="polite" aria-label="复制 SHA256 校验值">复制</button>
           </div>
         </article>
@@ -519,12 +526,12 @@ dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
         <article class="dl-card" id="dl-macos">
           <h3>macOS</h3>
           <p class="dl-spec" data-rel="spec-macos">macOS Apple Silicon · tar.gz · 约 1.9 MB · 未签名</p>
-          <p class="dl-file" data-rel="file-macos">serialhub-v1.7.1-macos-aarch64-unsigned.tar.gz</p>
+          <p class="dl-file" data-rel="file-macos">serialhub-v1.8.1-macos-aarch64-unsigned.tar.gz</p>
           <p class="dl-desc">适合 Apple 芯片 (M 系列) Mac，首次打开见下方放行提示。</p>
-          <a class="btn btn-primary dl-btn" data-rel="link-macos" href="https://github.com/MisakaMikoto128/serialhub/releases/download/v1.7.1/serialhub-v1.7.1-macos-aarch64-unsigned.tar.gz">下载 macOS 版</a>
+          <a class="btn btn-primary dl-btn" data-rel="link-macos" href="https://github.com/MisakaMikoto128/serialhub/releases/download/v1.8.1/serialhub-v1.8.1-macos-aarch64-unsigned.tar.gz">下载 macOS 版</a>
           <p class="sha-label">SHA256</p>
           <div class="sha-bar">
-            <code data-rel="sha-macos">250951d133fdcf1afa22746a1d740171c13144b6336ae1705970be5128c3ab5f</code>
+            <code data-rel="sha-macos">0c32ccb32d6bbe36c4157f8d4c5a701698053addb5d1337f7afe9443c5bba29c</code>
             <button type="button" class="copy-btn" aria-live="polite" aria-label="复制 SHA256 校验值">复制</button>
           </div>
         </article>
@@ -586,7 +593,15 @@ dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
       </div>
       <ol class="log-list">
         <li class="log-item">
-          <div class="log-head"><span class="ver-chip latest" data-rel="version">v1.7.1</span><span class="log-date" data-rel="date">2026-09-14</span></div>
+          <div class="log-head"><span class="ver-chip latest" data-rel="version">v1.8.1</span><span class="log-date" data-rel="date">2026-09-14</span></div>
+          <p class="log-sum">设置抽屉里「停止」和「关闭」按钮统一成同一档尺寸；全站 46 颗按钮复检后只剩标准/紧凑两档，观感更整齐。</p>
+        </li>
+        <li class="log-item">
+          <div class="log-head"><span class="ver-chip">v1.8.0</span><span class="log-date">2026-09-14</span></div>
+          <p class="log-sum">新建桥表单记得住上次的串口；波特率可以直接键入任意数值（预设列表只是快捷方式）；设置抽屉内置停止/启动钮，运行中改配置保存时自动一次完成。</p>
+        </li>
+        <li class="log-item">
+          <div class="log-head"><span class="ver-chip">v1.7.1</span><span class="log-date">2026-09-14</span></div>
           <p class="log-sum">修复了窗口位置大小记不住、新建桥表单偶发参数丢失的问题；波特率选择框也重做得更好用了。</p>
         </li>
         <li class="log-item">
@@ -596,14 +611,6 @@ dialog#lightbox::backdrop{background:rgba(28,38,48,.4)}
         <li class="log-item">
           <div class="log-head"><span class="ver-chip">v1.6.1</span><span class="log-date">2026-09-14</span></div>
           <p class="log-sum">Windows 95 主题更正宗：全站直角、立体凹凸按钮、经典藏蓝标题栏。</p>
-        </li>
-        <li class="log-item">
-          <div class="log-head"><span class="ver-chip">v1.6.0</span><span class="log-date">2026-09-14</span></div>
-          <p class="log-sum">新增 Windows 95 主题——经典青灰配色致敬老系统，成为内置第四套主题。</p>
-        </li>
-        <li class="log-item">
-          <div class="log-head"><span class="ver-chip">v1.5.0</span><span class="log-date">2026-09-14</span></div>
-          <p class="log-sum">全站复制改成图标按钮并配「已复制」气泡；「打开面板」一键在浏览器打开管理台；托盘右键菜单更顺手。</p>
         </li>
       </ol>
       <p class="log-more"><a data-rel="changelog" href="https://github.com/MisakaMikoto128/serialhub/blob/main/CHANGELOG.md" target="_blank" rel="noopener">查看全部更新日志 →</a></p>
