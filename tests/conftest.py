@@ -7,6 +7,11 @@
 - 被测桥 = target/release/serialhub.exe, 由夹具全生命周期管理:
   每条测试拉起 → 测试体运行 → teardown 强杀, 并有会话级兜底, 绝不残留占 COM1 的进程。
 - 串口只允许 COM1(桥侧) ↔ COM2(pyserial 对端) ELTIMA 虚拟对; 全程禁止碰 COM8。
+- FR-18 修订注记 (Sprint 8, ADR-19③): release 构建为 GUI 子系统后 headless 的
+  stdout/stderr 不可见。本夹具就绪门控**只依赖 HTTP** (wait_http_ready 轮询
+  /api/status), 不依赖 stdout —— 日志文件仅作失败诊断 (_tail), 为空不影响判定;
+  需要断言 stderr 文本的用例 (tests/test_fr16_single_instance.py) 自行改用
+  debug 构建, release 只断退出码。后续用例同样不得以 stdout 内容作判据。
 
 运行: 在项目根执行  python -m pytest tests/ -v
 """

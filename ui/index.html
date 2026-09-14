@@ -379,6 +379,7 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
         title="数据网址: 网页/程序连这座桥用 (本机, 形如 127.0.0.1:9001)" /></div>
     </div>
     <div class="ferr" id="npErrListen" hidden></div>
+    <div class="send-hint" id="npListenHint" hidden></div>
     <div class="field">
       <label for="npAuto">自动重连</label>
       <div class="ctl"><input id="npAuto" type="checkbox" class="switch" role="switch" checked
@@ -1011,18 +1012,72 @@ function npFieldErr(slotId, msg) {
   if (slotId) {
     $(slotId).textContent = msg;
     $(slotId).hidden = false;
+    if (slotId === "npErrListen") npListenHintOff(); /* FR-17: 端口出错时红字让位, 收起预填提示 */
     const inp = NP_ERR_INPUT[slotId];
     if (inp) { $(inp).classList.add("invalid"); $(inp).focus(); }
   }
 }
 const dlgNew = $("dlgNew");
+/* ================= FR-17 网址端口自动递增预填 =================
+   打开表单时以管理台端口为基准从 +1 起向上探测, 跳过 fleet 里已被各桥使用的
+   网址端口, 预填第一个空闲的 (例: 管理台 8080、已有桥 8081 → 预填 8082)。
+   每次打开都重算; 纯前端 (fleet 数据 + location.port), 用户仍可手改。 */
+let npListenTouched = false; /* 用户本次表单已手动改过网址端口, 预填不得覆盖手输 */
+let npPrefillSeq = 0;        /* 连续开关表单的竞态守卫: 只认最近一次打开的探测结果 */
+function npListenHintOff() {
+  const h = $("npListenHint");
+  h.hidden = true; h.textContent = "";
+}
+function npListenHintOn(msg) {
+  const h = $("npListenHint");
+  h.textContent = msg; h.hidden = false;
+}
+function managerPort() {
+  const p = parseInt(location.port, 10);
+  return p > 0 ? p : (location.protocol === "https:" ? 443 : 80);
+}
+async function prefillListenPort() {
+  const seq = ++npPrefillSeq;
+  const inp = $("npListen");
+  const giveUp = () => { /* fleet 拿不到 / 端口耗尽: 不瞎猜, 留空提示自己填, 不阻塞表单 */
+    inp.value = "";
+    npListenHintOn("填一个空闲端口");
+  };
+  let list;
+  try {
+    const j = await api("/api/fleet");
+    list = Array.isArray(j.bridges) ? j.bridges : [];
+  } catch (_) {
+    if (seq !== npPrefillSeq || npListenTouched) return;
+    giveUp();
+    return;
+  }
+  if (seq !== npPrefillSeq || npListenTouched) return;
+  const used = new Set();
+  list.forEach((b) => {
+    const m = /:(\d+)\s*$/.exec(String((b && b.listen) || ""));
+    if (m) used.add(parseInt(m[1], 10));
+  });
+  let free = 0;
+  for (let p = managerPort() + 1; p <= 65535; p++) {
+    if (!used.has(p)) { free = p; break; }
+  }
+  if (seq !== npPrefillSeq || npListenTouched) return;
+  if (!free) { giveUp(); return; }
+  inp.value = "127.0.0.1:" + free;
+  npListenHintOn("已为你选好一个空闲端口, 可修改");
+}
 function openNew() {
   dlgErr(null);
   npFieldErr(null, null);
   $("npName").value = "桥 " + (bridges.length + 1);
   $("npBaud").value = 115200;
   $("npData").value = "8"; $("npParity").value = "N"; $("npStop").value = "2"; $("npFlow").value = "none";
-  $("npListen").value = "127.0.0.1:" + (9001 + bridges.length);
+  /* FR-17: 先留空, 打开后异步探测下一个空闲端口预填 (每次打开重算, 可手改) */
+  npListenTouched = false;
+  npListenHintOff();
+  $("npListen").value = "";
+  prefillListenPort();
   $("npAuto").checked = true; /* FR-12: 自动重连默认开 */
   $("npPort").innerHTML = "<option value=\"\">(扫描中…)</option>";
   scanInto($("npPort"));
@@ -1636,6 +1691,7 @@ dlgNew.addEventListener("cancel", () => dlgNew.close());
 $("btnNpScan").addEventListener("click", () => scanInto($("npPort")));
 ["npBaud", "npListen"].forEach((id) => $(id).addEventListener("input", () => $(id).classList.remove("invalid")));
 ["npName", "npBaud", "npListen"].forEach((id) => $(id).addEventListener("input", () => npFieldErr(null, null)));
+$("npListen").addEventListener("input", () => { npListenTouched = true; npListenHintOff(); }); /* FR-17: 手改即收起提示, 预填不再覆盖 */
 $("npPort").addEventListener("change", () => npFieldErr(null, null));
 $("npName").addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); createBridge(); } });
 

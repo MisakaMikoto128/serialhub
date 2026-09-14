@@ -1,3 +1,9 @@
+// FR-18: Windows release 构建挂 GUI 子系统 —— 双击启动无黑色控制台窗口;
+// debug 构建保留控制台 (看输出/调试)。代价: release headless 的 stdout 不可见,
+// 属既定取舍 (spec FR-18 / ADR-19③; 实测 println 到不存在的句柄只是静默丢弃,
+// 不会 panic)。此属性必须是本文件第一条 (任何 use 之前)。
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 //! SerialHub 入口 (FR-8): CLI 解析 → 分派 GUI / headless 两种形态。
 //!
 //! - GUI (默认): gui::run_gui —— 主线程 tao 事件循环 + wry WebView + 托盘,
@@ -62,12 +68,25 @@ fn main() {
     }
 
     // headless 模式: 进程内 tokio 主任务 + Ctrl-C 优雅停机
-    if let Err(e) = tokio::runtime::Builder::new_multi_thread()
+    // (cli 传 clone, 失败路径还要用它重算 FR-16 探测目标)
+    let run = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("tokio runtime")
-        .block_on(headless_service(cli))
-    {
+        .block_on(headless_service(cli.clone()));
+    if let Err(e) = run {
+        // FR-16: headless 的管理台 bind 失败同样先探测占用者 —— 另一个 SerialHub
+        // 在跑 → stderr 一行 + 0 退出 (脚本可据此判定"服务已在"); 否则维持错误 + 1 退出。
+        let su = fleet::ManagerStartup::from_cli(&cli);
+        let target = fleet::effective_control_addr(
+            su.fleet_path.as_deref(),
+            su.control_addr,
+            su.addr_explicit,
+        );
+        if fleet::another_serialhub_running(target) {
+            eprintln!("SerialHub 已在运行: http://{target}");
+            std::process::exit(0);
+        }
         eprintln!("serialhub: {e}");
         std::process::exit(1);
     }

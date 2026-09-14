@@ -157,3 +157,15 @@ service.rs serve 循环化: rebind 槽 (每轮新建) 触发 serve 任务第二�
 ④ 最小接入 demo: examples/web-client.html (零依赖) + examples/python-client.py —— 原始字节
    读写示范, 值语义属客户端协议 (手册教程节引用)。
 ⑤ UX 审计 (105): 改动落定后全站美感复审, P1 当轮修。
+
+## ADR-19 Sprint 8 (2026-09-14, 架构师; 用户四点)
+
+① FR-16 单实例友好处理: GUI 第二实例 bind 失败时, 先探测目标端口是否为另一 SerialHub
+   (GET /api/status 响应形状判别) —— 是 → 信息提示框 (非错误): "SerialHub 已在运行,
+   管理台: <网址>", 确定后自动在浏览器打开该管理台, exit 0; 否则维持现有错误框。
+② FR-17 新建桥端口自动递增: 管理台新建桥表单预填下一个空闲数据端口
+   (管理台端口+1 起向上探测, 跳过已用), 用户仍可改 —— 少一次输入。
+③ 发布版 GUI 无控制台窗口: main.rs `#![cfg_attr(all(windows, not(debug_assertions)),
+   windows_subsystem = "windows")]` —— release GUI 无黑窗 (调试版保留控制台);
+   headless release 的 stdout 随之不可见, 属既定取舍 (文档注明)。
+④ 实用功能调研: 竞品对照席 (505) 专项报告, 只列真实用的, 不堆功能。

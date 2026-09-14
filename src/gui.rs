@@ -69,6 +69,13 @@ pub fn run_gui(cli: Cli) -> Result<(), String> {
     let service_cmd_tx = cmd_tx.clone();
     // Sprint 4 (FR-10): GUI 同样走多桥管理器 (管理台 = 控制面, 兼容桥承载旧 CLI 参数)
     let startup: ManagerStartup = ManagerStartup::from_cli(&cli);
+    // FR-16: bind 失败时的单实例探测目标 (= run_manager 将尝试绑定的生效地址,
+    // 随 fleet.json [manager] 恢复值漂移; 与 bind 共用 fleet::effective_control_addr)
+    let probe_addr = crate::fleet::effective_control_addr(
+        startup.fleet_path.as_deref(),
+        startup.control_addr,
+        startup.addr_explicit,
+    );
     let port0 = cli.port.clone().unwrap_or_default(); // 托盘 tooltip 初值
     let proxy_for_service = proxy.clone();
     let ready_tx2 = ready_tx.clone();  // 给 on_event (首次 Ready)
@@ -114,6 +121,13 @@ pub fn run_gui(cli: Cli) -> Result<(), String> {
     let addr = match ready_rx.recv_timeout(Duration::from_secs(15)) {
         Ok(Ok(addr)) => addr,
         Ok(Err(e)) => {
+            // FR-16: 占用者可能是另一个 SerialHub —— 先按 /api/status 响应形状探测;
+            // 是 → 信息框 (非错误样式) + 确定后自动开既有管理台 + 0 退出 (双击友好);
+            // 否则维持既有错误框语义 (FIX-14/ADR-8)。
+            if crate::fleet::another_serialhub_running(probe_addr) {
+                already_running_notice(probe_addr);
+                std::process::exit(0);
+            }
             fatal_msgbox(&e);
             return Err(e);
         }
@@ -409,6 +423,35 @@ fn fatal_msgbox(text: &str) {
 
 #[cfg(not(windows))]
 fn fatal_msgbox(_text: &str) {}
+
+/// FR-16: 第二实例探测到已有 SerialHub 在跑 —— 信息框 (非错误样式: 信息图标,
+/// 标题不带「启动失败」), 用户点确定后浏览器打开既有管理台, 调用方随后 0 退出。
+/// 非 Windows 没有本项目的对话框路径, 直接开浏览器 (0 退出语义不变)。
+#[cfg(windows)]
+fn already_running_notice(addr: SocketAddr) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND,
+    };
+    fn wide(s: &str) -> Vec<u16> {
+        let mut w: Vec<u16> = s.encode_utf16().collect();
+        w.push(0);
+        w
+    }
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            wide(&format!("SerialHub 已在运行\n管理台: http://{addr}")).as_ptr(),
+            wide("SerialHub").as_ptr(),
+            MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND,
+        );
+    }
+    open_in_browser(&format!("http://{addr}/"));
+}
+
+#[cfg(not(windows))]
+fn already_running_notice(addr: SocketAddr) {
+    open_in_browser(&format!("http://{addr}/"));
+}
 
 /// 在系统默认浏览器打开控制台 (FR-8 托盘菜单项); 不引入额外依赖。
 fn open_in_browser(url: &str) {

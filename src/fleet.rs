@@ -880,6 +880,163 @@ async fn bind_with_retry(addr: SocketAddr, within: Duration) -> Result<TcpListen
     }
 }
 
+// ============================================================ FR-16 单实例探测
+
+/// 生效的管理台地址 (FR-13): 显式 --addr 优先, 否则 fleet.json [manager] 恢复值,
+/// 都没有/不合法 → CLI 地址。run_manager_with 的 bind 与 FR-16 单实例探测
+/// (bind 失败后判别占用者) 共用本函数, 保证探测目标 == 尝试绑定的目标。
+pub fn effective_control_addr(
+    fleet_path: Option<&Path>,
+    cli_addr: SocketAddr,
+    addr_explicit: bool,
+) -> SocketAddr {
+    let persisted = fleet_path
+        .and_then(|p| load_fleet_file(p).ok())
+        .and_then(|f| f.manager)
+        .and_then(|m| m.addr.trim().parse::<SocketAddr>().ok());
+    match (addr_explicit, persisted) {
+        (false, Some(a)) => a,
+        _ => cli_addr,
+    }
+}
+
+/// FR-16 探测结论 (bind 失败时目标端口上跑的是谁)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstanceProbe {
+    /// 另一个 SerialHub 在跑 → 引导用户去既有管理台 (0 退出, 友好分支)
+    AlreadyRunning,
+    /// 其他程序占用 / 不可达 → 维持既有错误语义 (错误框 / exit 1)
+    NotOurs,
+}
+
+/// FR-16 纯判别: 另一 SerialHub 的 /api/status 响应形状。
+/// 主判据 = 响应体含 `"phase"` 字段 (spec FR-16; 恰好一桥时 status_json 必有);
+/// 辅判据 = 无桥/多桥时控制面的 409 文案「当前不是单桥模式」(legacy_unavailable)
+/// —— 同为本程序签名, 缺了它建过多座桥的实例会被误判成"其他程序占用"。
+/// 带引号的字段名 + 中文专句, 其他软件极难撞上; 误判代价也只是换一种提示框。
+fn status_body_is_serialhub(body: &str) -> bool {
+    body.contains("\"phase\"") || body.contains("当前不是单桥模式")
+}
+
+/// FR-16 纯判别入口: HTTP 探测结果 (响应体; None = 连接失败/超时/读失败)
+/// 收敛到两态。三分支 (SerialHub 响应/非 SerialHub 响应/超时) 单测见 probe_tests。
+fn classify_instance_probe(resp: Option<&str>) -> InstanceProbe {
+    match resp {
+        Some(body) if status_body_is_serialhub(body) => InstanceProbe::AlreadyRunning,
+        _ => InstanceProbe::NotOurs,
+    }
+}
+
+/// FR-16: 对 `<addr>/api/status` 发一次最小 HTTP GET, 成功返回响应体。
+/// 手写而不引 HTTP 客户端依赖: 一个端点一次 GET, std TcpStream 足矣;
+/// 连接与读各限 1s (调用点在 bind 失败路径上, 不能久等)。
+/// 必须用 std 同步栈: 调用点是 GUI 主线程 / headless 收尾, 不在 tokio 上下文里。
+fn http_get_status_body(addr: SocketAddr) -> Option<String> {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(1)).ok()?;
+    s.set_read_timeout(Some(Duration::from_secs(1))).ok()?;
+    s.set_write_timeout(Some(Duration::from_secs(1))).ok()?;
+    let req = format!(
+        "GET /api/status HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\nUser-Agent: serialhub-probe\r\n\r\n"
+    );
+    s.write_all(req.as_bytes()).ok()?;
+    let mut raw = Vec::new();
+    s.read_to_end(&mut raw).ok()?;
+    let text = String::from_utf8_lossy(&raw);
+    // 响应体 = 空行之后 (头/体分隔); 无分隔符 (响应不完整) 时按全文判别
+    Some(match text.find("\r\n\r\n") {
+        Some(i) => text[i + 4..].to_owned(),
+        None => text.into_owned(),
+    })
+}
+
+/// FR-16: 目标地址上是否跑着另一个 SerialHub。gui.rs (信息框) 与
+/// main.rs (headless stderr) 的 bind 失败路径共用。
+pub fn another_serialhub_running(addr: SocketAddr) -> bool {
+    matches!(
+        classify_instance_probe(http_get_status_body(addr).as_deref()),
+        InstanceProbe::AlreadyRunning
+    )
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+
+    #[test]
+    fn serialhub_status_body_is_detected() {
+        // 恰好一桥时的 /api/status 形状 (hub.status_json 序列化, 字段名见 hub.rs 契约)
+        let body = r#"{"phase":"closed","port":"","baud":115200,"config":"8N2","flow":"none","clients":0,"maxClients":0,"rxBytes":0,"txBytes":0,"lastError":null,"retries":0,"autoReconnect":true,"uptimeSec":1}"#;
+        assert_eq!(
+            classify_instance_probe(Some(body)),
+            InstanceProbe::AlreadyRunning
+        );
+    }
+
+    #[test]
+    fn multi_bridge_409_body_is_detected() {
+        // 无桥/多桥时控制面 409 (legacy_unavailable) —— 同为本程序签名 (FR-16 辅判据)
+        let body = r#"{"ok":false,"error":"当前不是单桥模式, 旧单桥接口仅在恰好一座桥时可用 (见 GET /api/fleet)"}"#;
+        assert_eq!(
+            classify_instance_probe(Some(body)),
+            InstanceProbe::AlreadyRunning
+        );
+    }
+
+    #[test]
+    fn other_program_body_is_not_detected() {
+        // 非 SerialHub 的 JSON / HTML / 空体
+        assert_eq!(
+            classify_instance_probe(Some(r#"{"status":"ok","service":"nginx"}"#)),
+            InstanceProbe::NotOurs
+        );
+        // 裸词 "phase" 不算 —— 必须是带引号的字段名
+        assert_eq!(
+            classify_instance_probe(Some("<html>phase</html>")),
+            InstanceProbe::NotOurs
+        );
+        assert_eq!(classify_instance_probe(Some("")), InstanceProbe::NotOurs);
+    }
+
+    #[test]
+    fn timeout_or_unreachable_is_not_detected() {
+        // None = 连接失败/超时/读失败 → 维持既有错误语义, 不做友好引导
+        assert_eq!(classify_instance_probe(None), InstanceProbe::NotOurs);
+    }
+
+    #[test]
+    fn effective_addr_explicit_wins_then_fallback() {
+        // FR-13/FR-16 共用: 显式 --addr 恒优先; 无清单/清单不可读 → CLI 地址。
+        // (清单恢复值路径由 run_manager_with 生产路径覆盖; 此处锁定两条回退分支。)
+        let cli: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        assert_eq!(effective_control_addr(None, cli, true), cli);
+        assert_eq!(effective_control_addr(None, cli, false), cli);
+        let missing = std::path::Path::new("Z:/definitely/not/exist/fleet.json");
+        assert_eq!(effective_control_addr(Some(missing), cli, false), cli);
+    }
+
+    #[test]
+    fn effective_addr_persisted_manager_wins_when_not_explicit() {
+        // FR-13: 未显式给出 --addr 且清单 [manager] 有合法地址 → 用恢复值
+        // (这也是 FR-16 探测目标必须走本函数的原因: bind 目标随清单漂移)
+        let dir = std::env::temp_dir().join(format!("serialhub-probe-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fleet.json");
+        std::fs::write(
+            &path,
+            r#"{"version":1,"manager":{"addr":"127.0.0.1:9155"},"bridges":[]}"#,
+        )
+        .unwrap();
+        let cli: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let got = effective_control_addr(Some(&path), cli, false);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(got, "127.0.0.1:9155".parse::<SocketAddr>().unwrap());
+        // 显式 --addr 时清单值让位
+        assert_eq!(effective_control_addr(Some(&path), cli, true), cli);
+    }
+}
+
 // ============================================================ 控制面 (FR-10g)
 
 #[derive(Clone)]
@@ -1340,15 +1497,9 @@ pub async fn run_manager_with(
     // 1) 控制面绑定 (FR-10a: 管理台固定地址, 永远可达; bind 失败重试 ≤2s → 致命)。
     //    FR-13: fleet.json [manager] addr 持久化恢复 —— 显式 --addr 优先;
     //    未显式给出且清单里有合法地址 → 用恢复值 (改过端口的用户重启后回到原地址)。
-    let persisted_addr: Option<SocketAddr> = mgr
-        .fleet_path
-        .as_deref()
-        .and_then(|p| load_fleet_file(p).ok())
-        .and_then(|f| f.manager)
-        .and_then(|m| m.addr.trim().parse::<SocketAddr>().ok());    let control_addr = match (su.addr_explicit, persisted_addr) {
-        (false, Some(a)) => a,
-        _ => su.control_addr,
-    };
+    //    解析逻辑抽成 effective_control_addr: FR-16 单实例探测与 bind 共用同一目标。
+    let control_addr =
+        effective_control_addr(mgr.fleet_path.as_deref(), su.control_addr, su.addr_explicit);
     let mut listener = bind_with_retry(control_addr, Duration::from_secs(2))
         .await
         .map_err(|e| format!("管理台端口被占用: {e}"))?;

@@ -122,6 +122,18 @@
 | P0 | examples: web-client.html + python-client.py 最小接入示例 + 手册教程节 | ADR-18④ | ✔ 波2 (604, COM1/COM2 双端实测, 截图 examples-demo/) |
 | P1 | UX 美感复审 (105) + 修复轮 + v1.3.0 发版 | ADR-18⑤ | ☐ 波2 |
 
+## Sprint 8 — 体验修缮 + 实用功能调研 (v1.4.0, 当前)
+
+| 优先级 | 条目 | 对应 | 状态 |
+|---|---|---|---|
+| P0 | dev-backend: FR-16 单实例友好框 (probe 三分支判别/信息框/开浏览器/exit 0) + FR-18 release 无控制台 (PE 子系统实证) | ADR-19①③ | ✔ 79 测 |
+| P0 | dev-ui: FR-17 新建桥端口自动递增预填 (跳过已用, 可手改) | ADR-19② | ✔ 5 场景 |
+| P0 | qa: FR-16 8 条 (debug/release 双构建) + FR-17 3 条 (Playwright 黑盒) + 回归 63 passed | spec §8 | ✔ |
+| P0 | research (505): 实用功能调研报告 —— Top3: 数据录制回放 / TCP·MQTT 旁路转发 / 服务化+日志文件; 10 条 P2; 8 条明确不做 | ADR-19④ | ✔ |
+
+**Sprint 8 验收**: 2026-09-14 通过 —— 单实例友好框 / 端口预填 / release 无控制台;
+人工清单 M1-M5 (弹窗样式/开浏览器目视) 随 v1.4.0 发布页留档。
+
 ## Sprint 2 候选 (验收后圈定)
 
 | 优先级 | 条目 | 对应 |
