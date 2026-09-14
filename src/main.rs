@@ -13,6 +13,7 @@
 //!   字节通路与并发模型见 serial.rs / supervisor.rs 顶部注释。
 
 mod api;
+mod browser;
 mod cli;
 mod config;
 mod fleet;

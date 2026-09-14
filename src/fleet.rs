@@ -1068,6 +1068,11 @@ struct ControlState {
     index: &'static str,
     /// FR-14: 主题目录 (每轮 serve 重建 ControlState 时随 mgr 携带)。
     themes_dir: PathBuf,
+    /// ADR-21②: 当前管理台地址 (/api/open-console 回显; 每轮 serve 随绑定值重建)。
+    console_addr: SocketAddr,
+    /// ADR-21②: 打开器 (生产 = crate::browser::open_url; 单测注入记录闭包,
+    /// 不真开浏览器)。Arc<dyn Fn> 而非 fn 指针: 测试闭包需捕获记录槽。
+    console_opener: Arc<dyn Fn(&str) + Send + Sync>,
 }
 
 fn control_router(cs: ControlState) -> Router {
@@ -1086,6 +1091,8 @@ fn control_router(cs: ControlState) -> Router {
         .route("/api/fleet/{id}/tap", get(fleet_tap))
         // ---- FR-13 管理台设置: 控制面地址原地换绑 (复用 ADR-12 机制) ----
         .route("/api/manager/addr", post(manager_set_addr))
+        // ---- ADR-21②: 用系统默认浏览器打开管理台 (壳内页面按钮受信路径) ----
+        .route("/api/open-console", post(open_console))
         // ---- FR-14 主题插件 ----
         .route("/api/themes", get(themes_list))
         .route("/themes/{file}", get(themes_file))
@@ -1390,6 +1397,26 @@ async fn manager_set_addr(
     api::restart_core(&cs.restart_to, body)
 }
 
+// ---- ADR-21②: 打开管理台 ----
+
+/// POST /api/open-console: 用系统默认浏览器打开管理台地址, 返回
+/// `{"ok":true,"addr":"http://…"}`。壳内页面按钮的受信路径 (wry 拦截 window.open
+/// 属已知, FR-13 起壳有 open_in_browser 能力 —— 此处把该能力开放给管理面);
+/// 浏览器页 (非壳) 无需此端点 (维持 window.open 新标签), 但调了同样有效。
+/// GUI 壳与 headless 共用控制面路由, 两形态均可用 (headless 脚本亦可触发)。
+async fn open_console(State(cs): State<ControlState>) -> Response {
+    let opener = cs.console_opener.clone();
+    open_console_core(cs.console_addr, move |url| opener(url))
+}
+
+/// 核心 (ADR-21②): addr → URL → opener → 回显。opener 注入以便单测
+/// (真实打开 = `crate::browser::open_url`, spawn 即返回不阻塞事件循环)。
+fn open_console_core(addr: SocketAddr, opener: impl FnOnce(&str)) -> Response {
+    let url = format!("http://{addr}/");
+    opener(&url);
+    Json(json!({ "ok": true, "addr": url })).into_response()
+}
+
 // ---- FR-14: 主题插件 ----
 
 /// GET /api/themes: {"themes":[{"name":"light","builtin":true},...]}
@@ -1667,6 +1694,8 @@ pub async fn run_manager_with(
     //      "JoinHandle polled after completion"。
     let mut cur_addr = addr;
     let mut done_handle: Option<JoinHandle<Result<Option<()>, std::io::Error>>> = None;
+    // ADR-21②: /api/open-console 的真实打开器 (每轮 ControlState 共用同一 Arc)
+    let console_opener: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(crate::browser::open_url);
     loop {
         let round_rebind: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let cs = ControlState {
@@ -1675,6 +1704,8 @@ pub async fn run_manager_with(
             restart_to: round_rebind.clone(),
             index: include_str!("../ui/index.html"),
             themes_dir: themes_dir.clone(),
+            console_addr: cur_addr, // 换址轮随新绑定值重建 → 回显恒为现地址
+            console_opener: console_opener.clone(),
         };
         // 首轮用 Ready 前订阅好的接收端 (无晚订阅竞态); 换址轮重新订阅
         let mut serve_sd = first_serve_sd
@@ -2188,6 +2219,51 @@ mod tests {
             assert!(tokio::time::Instant::now() < deadline, "等待 WS 订阅超时");
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+    }
+
+    // ---- ADR-21②: /api/open-console ----
+
+    /// 端点级测试: 真 ControlState + 真 control_router, 但 opener 注入记录闭包
+    /// (不真开浏览器 —— 真机人工验证, 见 Sprint9 报告)。断言 200 + addr 回显 +
+    /// opener 收到的 URL 与回显一致。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn open_console_endpoint_reports_console_addr() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bound = listener.local_addr().unwrap();
+        let opened = Arc::new(Mutex::new(Vec::<String>::new()));
+        let opened_in_cs = opened.clone();
+        let (sd_tx, sd_rx) = watch::channel(false);
+        let cs = ControlState {
+            mgr: Arc::new(BridgeManager::new(None)),
+            shutdown_tx: sd_tx.clone(),
+            restart_to: Arc::new(Mutex::new(None)),
+            index: "",
+            themes_dir: std::env::temp_dir(),
+            console_addr: bound,
+            console_opener: Arc::new(move |url: &str| {
+                lock_mutex(&opened_in_cs).push(url.to_string());
+            }),
+        };
+        let server = tokio::spawn(async move {
+            let mut sd_rx = sd_rx;
+            let _ = axum::serve(listener, control_router(cs))
+                .with_graceful_shutdown(async move {
+                    let _ = sd_rx.changed().await;
+                })
+                .await;
+        });
+
+        let (code, body) = http_req(bound, "POST", "/api/open-console", None).await;
+        assert_eq!(code, 200, "open-console 应受理: {body}");
+        let v: Value = serde_json::from_str(&body).unwrap();
+        let expect = format!("http://{bound}/");
+        assert_eq!(v["ok"], json!(true), "回显 ok: {body}");
+        assert_eq!(v["addr"], json!(expect), "回显 addr 应为管理台地址: {body}");
+        // 注入的打开器收到的 URL 与回显一致 (真开浏览器的替身)
+        assert_eq!(*lock_mutex(&opened), vec![expect]);
+
+        let _ = sd_tx.send(true); // 优雅停 serve
+        let _ = server.await;
     }
 
     // ---- CRUD / 端口冲突 / 端点稳定 (FR-10b/f/g) ----

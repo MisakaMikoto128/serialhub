@@ -77,6 +77,14 @@ header .spacer{flex:1}
 #noticeBar.err{background:var(--err-bg);color:var(--err-ink);border:1px solid var(--err)}
 #noticeBar.ok{background:var(--ok-bg);color:var(--ok-ink);border:1px solid var(--ok)}
 
+/* 复制气泡 (ADR-21①): 全站只此一个共享元素, 由 JS 定位到触发钮上/下方,
+   ~1.5s 自散; 颜色取 ink/bg 配对反色 (随主题自动翻转, 无硬编码) */
+#copyTip{position:fixed;left:0;top:0;z-index:60;padding:5px 9px;border-radius:var(--ctl-radius);
+  background:var(--ink);color:var(--bg);font-size:12px;line-height:1.4;white-space:nowrap;
+  pointer-events:none;opacity:0;transition:opacity .12s}
+#copyTip.show{opacity:1}
+#copyTip.err{background:var(--err);color:var(--err-bg)}
+
 /* ============ 主区: 桥列表 ============ */
 main{max-width:1200px;margin:0 auto;padding:var(--gap)}
 .toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:var(--gap)}
@@ -119,7 +127,9 @@ main{max-width:1200px;margin:0 auto;padding:var(--gap)}
 .wire line.on-tx{stroke:var(--tx);animation:dashL .5s linear infinite}
 @keyframes dashR{to{stroke-dashoffset:-9}}
 @keyframes dashL{to{stroke-dashoffset:9}}
-.mini-copy{flex:none}
+/* ADR-21①: 复制动作图标钮 (28px 紧凑档, 图标内联居中, 尺寸/圆角走 UI-1 令牌) */
+.icon-btn{flex:none;width:28px;height:var(--ctl-h-sm);padding:0}
+.icon-btn svg{width:15px;height:15px;display:block}
 
 /* 速率行: 数字 + 最近 60s 火花线 */
 .rates{display:flex;align-items:center;gap:8px 16px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
@@ -155,10 +165,10 @@ main{max-width:1200px;margin:0 auto;padding:var(--gap)}
 button{background:var(--panel-2);border:1px solid var(--border-strong);border-radius:var(--ctl-radius);
   height:var(--ctl-h);padding:0 var(--ctl-px);font-size:var(--ctl-fs);color:var(--ink);
   display:inline-flex;align-items:center;justify-content:center;white-space:nowrap}
-/* 紧凑档 (--ctl-h-sm): 仅工具条/标题条/侦听工具条内小按钮 */
-.quit-btn,.copy-btn,.mini-copy,.x-btn,.seg button,.term-toolbar>button{height:var(--ctl-h-sm)}
+/* 紧凑档 (--ctl-h-sm): 仅工具条/标题条/侦听工具条内小按钮 (复制图标钮的高度在 .icon-btn 自带) */
+.quit-btn,.x-btn,.seg button,.term-toolbar>button{height:var(--ctl-h-sm)}
 /* 波3 (UX P2-1): 页头钮统一标准档 34 —— 新钮与原住民同排同高, 不再有"两代按钮" */
-#btnCopyUrl,#btnQuit{height:var(--ctl-h)}
+#btnQuit{height:var(--ctl-h)}
 button:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
 button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
 button.primary:hover:not(:disabled){background:var(--accent-hover);color:var(--accent-ink)}
@@ -313,7 +323,7 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
   <span class="spacer"></span>
   <span class="urlchip" title="管理台网址; 各桥有自己的数据网址, 程序请连各桥的">
     <span>控制台网址</span><code id="consoleUrl">…</code>
-    <button id="btnCopyUrl" type="button" class="copy-btn" title="复制控制台网址">复制</button>
+    <button id="btnCopyUrl" type="button" class="icon-btn" title="复制" aria-label="复制控制台网址"></button>
   </span>
   <span class="hdr-actions">
     <button id="btnOpenPanel" type="button" title="在系统默认浏览器打开管理台; 弹不出来时会自动复制网址">打开面板</button>
@@ -323,6 +333,7 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
 </header>
 
 <div id="noticeBar" role="alert"></div>
+<div id="copyTip" role="status" aria-live="polite"></div>
 
 <main>
   <div class="toolbar">
@@ -453,7 +464,7 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
         <line class="wrx" x1="2" y1="8" x2="42" y2="8"/><line class="wtx" x1="2" y1="18" x2="42" y2="18"/>
       </svg>
       <div class="node net" title="数据网址: 网页/程序连接这座桥用"><span class="cap">网址</span>
-        <span class="nwrap"><b class="n-listen"></b><button type="button" class="mini-copy" title="复制数据网址给网页/程序">复制</button></span></div>
+        <span class="nwrap"><b class="n-listen"></b><button type="button" class="icon-btn" title="复制" aria-label="复制数据网址给网页/程序"></button></span></div>
     </div>
     <div class="rates">
       <span class="rgrp"><span class="rlab"><span class="rdot"></span>收 · 串口→网页</span>
@@ -478,7 +489,7 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
     <button id="drClose" type="button" title="关闭抽屉 (Esc)">✕ 关闭</button>
   </div>
   <div class="dr-dataurl">数据网址 <code id="drDataUrl">—</code>
-    <button id="btnDrCopyUrl" type="button" class="copy-btn" title="复制数据网址给网页/程序">复制</button>
+    <button id="btnDrCopyUrl" type="button" class="icon-btn" title="复制" aria-label="复制数据网址给网页/程序"></button>
   </div>
   <div class="dr-tabs" role="tablist" aria-label="桥管理" data-strip>
     <button id="tb-cfg" type="button" role="tab" aria-selected="true" aria-controls="pan-cfg">设置</button>
@@ -535,7 +546,7 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
       <div class="field">
         <label>数据网址</label>
         <div class="ctl"><code id="cfDataUrl"></code>
-          <button id="btnCfCopyUrl" type="button" class="copy-btn" title="复制数据网址给网页/程序">复制</button></div>
+          <button id="btnCfCopyUrl" type="button" class="icon-btn" title="复制" aria-label="复制数据网址给网页/程序"></button></div>
       </div>
       <div class="send-hint">网页/程序打开「数据网址」就能连到这个串口; 同一串口同时只归一座桥</div>
       <div id="cfLockHint" class="lock-hint"></div>
@@ -546,7 +557,7 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
         <div class="send-hint">在命令行里跑这条, 效果和这座桥完全一样; 不想弹窗口就加 --headless</div>
       </details>
       <div class="actions" style="margin-top:12px;display:flex;align-items:center;gap:8px">
-        <button id="btnCfCopyCmd" type="button" class="copy-btn" title="复制命令行写法">复制</button>
+        <button id="btnCfCopyCmd" type="button" class="icon-btn" title="复制" aria-label="复制命令行写法"></button>
         <button id="btnCfSave" type="button" class="primary" title="保存这座桥的设置">保 存</button>
       </div>
     </section>
@@ -685,8 +696,8 @@ function notice(msg, kind) {
   noticeTimer = setTimeout(() => { el.className = ""; }, 6000);
 }
 
-/* 复制到剪贴板 (WebView2/非安全上下文兜底 execCommand) */
-async function copyText(t, btn, idle) {
+/* 复制到剪贴板 (WebView2/非安全上下文兜底 execCommand); 结果经共享气泡播报 (ADR-21①) */
+async function copyText(t, btn) {
   let ok = true;
   try { await navigator.clipboard.writeText(t); }
   catch (_) {
@@ -697,11 +708,39 @@ async function copyText(t, btn, idle) {
       document.execCommand("copy"); ta.remove();
     } catch (_2) { ok = false; }
   }
-  if (btn) {
-    btn.textContent = ok ? "已复制" : "复制失败";
-    setTimeout(() => { btn.textContent = idle || "复制"; }, 1500);
-  }
+  if (btn) showCopyTip(btn, ok);
   return ok;
+}
+
+/* 复制气泡 (ADR-21①): 全站只此一个 #copyTip, 定位在触发钮上方 (顶边放不下挪到下方,
+   横向夹在视口内); 重触发即重定位重计时 —— 同一时刻最多一个, ~1.5s 自散, 不堆叠 */
+let copyTipTimer = null;
+function showCopyTip(btn, ok) {
+  const tip = $("copyTip");
+  tip.textContent = ok ? "已复制" : "复制失败";
+  tip.classList.toggle("err", !ok);
+  tip.classList.add("show");
+  const r = btn.getBoundingClientRect();
+  const tw = tip.offsetWidth, th = tip.offsetHeight;
+  let x = r.left + r.width / 2 - tw / 2;
+  x = Math.max(6, Math.min(x, window.innerWidth - tw - 6));
+  let y = r.top - th - 6;
+  if (y < 6) y = r.bottom + 6;
+  tip.style.left = Math.round(x) + "px";
+  tip.style.top = Math.round(y) + "px";
+  clearTimeout(copyTipTimer);
+  copyTipTimer = setTimeout(() => tip.classList.remove("show"), 1500);
+}
+
+/* 复制图标 (两叠圆角矩形, 内联 SVG 不引外部库): 单源注入全部图标钮, 模板卡内那颗一并盖 */
+const COPY_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
+  + 'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+  + '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>'
+  + '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+for (const b of document.querySelectorAll(".icon-btn")) b.innerHTML = COPY_ICON;
+{
+  const tplBtn = $("tplCard").content.querySelector(".icon-btn");
+  if (tplBtn) tplBtn.innerHTML = COPY_ICON;
 }
 
 /* ================= 火花线 (最近 60 秒速率) ================= */
@@ -751,7 +790,7 @@ function buildCard(id) {
     serial: root.querySelector(".n-serial"),
     nName: root.querySelector(".n-name"),
     listen: root.querySelector(".n-listen"),
-    copyUrl: root.querySelector(".mini-copy"),
+    copyUrl: root.querySelector(".icon-btn"),
     wires: [...root.querySelectorAll(".wire")],
     vRx: root.querySelector(".v-rx"),
     vTx: root.querySelector(".v-tx"),
@@ -1525,14 +1564,24 @@ $("btnQuit").addEventListener("click", async () => {
   try { await fetch("/api/shutdown", { method: "POST" }); } catch (_) {}
 });
 
-/* ================= 打开面板 (FR-13): 浏览器页→新标签; 桌面壳→复制降级 =================
-   壳 (wry/WebView2) 未设新窗口处理器, 原生层会把 window.open 吞掉 (Sprint7 实测见报告):
-   返回空 = 没弹出来, 降级为复制网址 + 提示; 浏览器页 window.open 正常开新标签。 */
+/* ================= 打开面板 (FR-13 / ADR-21②) =================
+   桌面壳: 壳内 window.open 被原生层吞掉 (Sprint7 实测见报告), 改调后端
+   POST /api/open-console —— 后端用系统默认浏览器打开管理台; 成功轻提示,
+   端点失败才降级为复制网址 + 原提示。浏览器页 (非壳): window.open 新标签,
+   弹不出时同样降级复制。 */
 $("btnOpenPanel").addEventListener("click", async () => {
   const url = location.protocol + "//" + location.host + "/";
-  let w = null;
-  try { w = window.open(url, "_blank"); } catch (_) { w = null; }
-  if (w) { try { w.focus(); } catch (_) {} return; }
+  if (IS_SHELL) {
+    try {
+      await api("/api/open-console", {});
+      notice("已在浏览器打开管理台", "ok");
+      return;
+    } catch (_) { /* 端点不可用/失败: 降级复制走统一兜底 */ }
+  } else {
+    let w = null;
+    try { w = window.open(url, "_blank"); } catch (_) { w = null; }
+    if (w) { try { w.focus(); } catch (_) {} return; }
+  }
   const ok = await copyText(url);
   notice(ok ? "没弹出浏览器 — 管理台网址已复制, 请粘贴到浏览器地址栏打开"
             : "没弹出浏览器, 网址也没复制上 — 请手动输入: " + url, ok ? "ok" : "err");

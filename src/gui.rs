@@ -21,7 +21,7 @@ use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::ControlFlow;
 use tao::window::{Icon as TaoIcon, WindowBuilder};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-use tray_icon::{TrayIconBuilder, TrayIconEvent};
+use tray_icon::{MouseButton, TrayIconBuilder, TrayIconEvent};
 
 use crate::cli::Cli;
 use crate::fleet::{run_manager, ManagerStartup};
@@ -205,10 +205,10 @@ pub fn run_gui(cli: Cli) -> Result<(), String> {
         };
         let _ = p_menu.send_event(ue);
     }));
-    // 托盘图标单击 → 显示主窗口
+    // 托盘图标事件 → 是否恢复主窗口 (ADR-21③: 仅左键; 判定抽成纯函数以便单测)
     let p_click = proxy.clone();
     TrayIconEvent::set_event_handler(Some(move |ev: TrayIconEvent| {
-        if matches!(ev, TrayIconEvent::Click { .. } | TrayIconEvent::DoubleClick { .. }) {
+        if tray_event_restores_window(&ev) {
             let _ = p_click.send_event(UserEvent::ShowWindow);
         }
     }));
@@ -257,7 +257,7 @@ pub fn run_gui(cli: Cli) -> Result<(), String> {
                     let _ = cmd_tx.send(HubCmd::Close);
                 }
                 UserEvent::OpenBrowser => {
-                    open_in_browser(&format!("http://{cur_addr}/"));
+                    crate::browser::open_url(&format!("http://{cur_addr}/"));
                 }
                 UserEvent::Stopped => {
                     // 服务清理完毕 (串口线程已退出), 真正结束进程
@@ -445,31 +445,81 @@ fn already_running_notice(addr: SocketAddr) {
             MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND,
         );
     }
-    open_in_browser(&format!("http://{addr}/"));
+    crate::browser::open_url(&format!("http://{addr}/"));
 }
 
 #[cfg(not(windows))]
 fn already_running_notice(addr: SocketAddr) {
-    open_in_browser(&format!("http://{addr}/"));
+    crate::browser::open_url(&format!("http://{addr}/"));
 }
 
-/// 在系统默认浏览器打开控制台 (FR-8 托盘菜单项); 不引入额外依赖。
-fn open_in_browser(url: &str) {
-    #[cfg(windows)]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        use std::os::windows::process::CommandExt;
-        let _ = std::process::Command::new("cmd")
-            .args(["/C", "start", "", url])
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn();
+/// ADR-21③: 托盘事件是否应恢复主窗口 —— 仅**左键**的单击/双击 (DoubleClick 同属
+/// 左键恢复语义)。右键/中键不触碰窗口: 右键菜单是 tray-icon 内建弹出
+/// (with_menu_on_left_click(false)), 判定不在这里做。
+///
+/// 病根 (用户实测): 此前 Click 不分键, 而 Windows 下 WM_RBUTTONDOWN/UP 都会发
+/// `Click { button: Right }` —— 右键弹菜单的瞬间主窗口被拉起抢走焦点, 菜单即逝。
+/// 抽成纯函数以便单测 (handler 本体在主线程 UI 事件回调里, 无法集成测试)。
+fn tray_event_restores_window(ev: &TrayIconEvent) -> bool {
+    matches!(
+        ev,
+        TrayIconEvent::Click { button: MouseButton::Left, .. }
+            | TrayIconEvent::DoubleClick { button: MouseButton::Left, .. }
+    )
+}
+
+// ---------------- 单测 (ADR-21③: 托盘分键) ----------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tray_icon::dpi::PhysicalPosition;
+    use tray_icon::{MouseButtonState, Rect, TrayIconId};
+
+    fn click(button: MouseButton, state: MouseButtonState) -> TrayIconEvent {
+        TrayIconEvent::Click {
+            id: TrayIconId::new("1"),
+            position: PhysicalPosition::new(0.0, 0.0),
+            rect: Rect::default(),
+            button,
+            button_state: state,
+        }
     }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("open").arg(url).spawn();
+
+    fn dblclick(button: MouseButton) -> TrayIconEvent {
+        TrayIconEvent::DoubleClick {
+            id: TrayIconId::new("1"),
+            position: PhysicalPosition::new(0.0, 0.0),
+            rect: Rect::default(),
+            button,
+        }
     }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+
+    #[test]
+    fn tray_left_click_restores_window() {
+        // 左键按下/抬起都算恢复语义 (Windows 两个消息都发 Click)
+        assert!(tray_event_restores_window(&click(MouseButton::Left, MouseButtonState::Down)));
+        assert!(tray_event_restores_window(&click(MouseButton::Left, MouseButtonState::Up)));
+        assert!(tray_event_restores_window(&dblclick(MouseButton::Left)));
+    }
+
+    #[test]
+    fn tray_right_and_other_keys_never_touch_window() {
+        // 右键 (按下/抬起) 只属于内建菜单, 不得拉起主窗口 (ADR-21③ 病根回归)
+        assert!(!tray_event_restores_window(&click(MouseButton::Right, MouseButtonState::Down)));
+        assert!(!tray_event_restores_window(&click(MouseButton::Right, MouseButtonState::Up)));
+        assert!(!tray_event_restores_window(&dblclick(MouseButton::Right)));
+        // 中键 / 悬停类事件同样不触碰窗口
+        assert!(!tray_event_restores_window(&click(MouseButton::Middle, MouseButtonState::Up)));
+        assert!(!tray_event_restores_window(&TrayIconEvent::Enter {
+            id: TrayIconId::new("1"),
+            position: PhysicalPosition::new(0.0, 0.0),
+            rect: Rect::default(),
+        }));
+        assert!(!tray_event_restores_window(&TrayIconEvent::Leave {
+            id: TrayIconId::new("1"),
+            position: PhysicalPosition::new(0.0, 0.0),
+            rect: Rect::default(),
+        }));
     }
 }

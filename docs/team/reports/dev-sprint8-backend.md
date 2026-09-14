@@ -102,3 +102,77 @@ backlog「Sprint 8 · dev-backend (波1)」。改动范围: `src/fleet.rs`(+169)
   —— 文档席一句话动作。
 - dev-ui 的 FR-17 预填与 QA 的 tests/test_fr16_single_instance.py 为并行席位
   交付, 本报告未涉及。
+
+---
+
+# Dev Sprint 9 后端报告 — /api/open-console / 托盘右键 bug (ADR-21②③)
+
+作者: 后端主程 (201) · 2026-09-13 · 依据: decisions.md ADR-21 / backlog「Sprint 9 ·
+dev-backend (波1)」。改动范围: `src/browser.rs`(新增 25 行)、`src/fleet.rs`(+76)、
+`src/gui.rs`(+66/-28)、`src/main.rs`(+1);**零新增依赖** (open_url 实现自 gui.rs
+原样抽出, Cargo.toml 未动)。不 commit;真机自验用 127.0.0.1:8461 +
+`--fleet` 指向临时文件 (不读不写真实 %APPDATA% fleet.json), 未指定 --port =
+空串口兼容桥, **全程未触碰任何 COM 口 (含 COM8)**, 验证完按任务杀净。
+
+## 1. POST /api/open-console (ADR-21② 打开面板修复 · 后端半)
+
+- **共享模块 `src/browser.rs`**: `open_url(url)` —— gui.rs `open_in_browser`
+  原实现原样迁移 (windows: `cmd /C start "" url` + CREATE_NO_WINDOW;
+  macos: `open`; linux: `xdg-open`; spawn 即返回不阻塞, 失败静默)。
+  gui.rs 三处调用点 (托盘菜单/FR-16 单实例提示×2) 改调 `crate::browser::open_url`,
+  本地函数删除。管理面/headless/GUI 三形态共用同一实现。
+- **端点**: control_router 新增 `POST /api/open-console` → `{"ok":true,"addr":"http://<管理台>/"}`
+  (HTTP 200)。挂控制面即同时覆盖 GUI 壳 (壳内页面按钮的受信路径, 绕 wry 拦截
+  window.open) 与 headless (脚本可直接触发);浏览器页 (非壳) 不需要它但调了同样有效。
+- **地址来源**: `ControlState` 新增 `console_addr: SocketAddr` —— serve 循环每轮
+  (含 FR-13 换址轮) 随 `cur_addr` (本轮实际绑定值) 重建, 回显恒为现地址;
+  另新增 `console_opener: Arc<dyn Fn(&str) + Send + Sync>` (生产 =
+  `browser::open_url`, 单测注入记录闭包)。核心 `open_console_core(addr, opener)`
+  沿用本仓 `*_core` 注入口径: opener 可替换, 测试**不真开浏览器**。
+- **单测** `open_console_endpoint_reports_console_addr` (fleet.rs tests):
+  真 ControlState + 真 control_router + axum::serve (随机端口), opener = 记录闭包;
+  断言 200 + `ok==true` + `addr == "http://<绑定地址>/"` + 打开器收到的 URL 与回显
+  一致 (端到端路由→handler→core 全覆盖)。
+
+## 2. 托盘右键 bug (ADR-21③)
+
+- **病根 (读 tray-icon 0.25 源码坐实)**: Windows 下 WM_RBUTTONDOWN/UP **都**发
+  `TrayIconEvent::Click { button: Right, button_state: Down/Up }`;原 handler
+  `matches!(Click{..}|DoubleClick{..})` 不分键 → 右键弹菜单瞬间 ShowWindow 拉起
+  主窗口抢走焦点, 菜单即逝 (与用户实测吻合)。
+- **修法**: 判定抽成纯函数 `tray_event_restores_window(&TrayIconEvent) -> bool`
+  (gui.rs) —— 仅 `Click{button: Left}` 与 `DoubleClick{button: Left}`
+  (DoubleClick 归左键恢复语义);Right/Middle/Enter/Leave 一律 false, 窗口不被
+  触碰, 右键菜单为 tray-icon 内建弹出 (`with_menu_on_left_click(false)` 维持不变)。
+- **单测** (gui.rs 新增 tests 模块, 2 条): 左键 Down/Up + DoubleClick(L) → true;
+  右键 Down/Up、DoubleClick(R)、中键、Enter/Leave → false。UI 事件回调本体仍无法
+  集成测试, 但**判定逻辑已 100% 单测覆盖**, 托盘实际点击手感留人工 (见 §4)。
+
+## 3. 验证
+
+- **cargo test: 83 passed / 0 failed** (80 → 83: gui 分键 ×2 + open-console 端点
+  ×1);无新增编译警告 (现存仅 hub.rs `retries` 未用, 系先前既有)。fmt/clippy 为
+  CI 既知技术债 (ci.yml 注释挂起), 未引入新违例。
+- **真机 /api/open-console (真开浏览器一次)**: debug 构建 headless 起服务
+  (127.0.0.1:8461, 临时 fleet 文件) → GET /api/status 正常 → POST
+  /api/open-console 返回 `{"addr":"http://127.0.0.1:8461/","ok":true}` (200),
+  Chrome 进程数 35 → **36** (新标签真实拉起, 页面由本服务加载) → 按 PID 杀净,
+  端口关闭, 临时 fleet 文件删除, `Get-Process serialhub` = 0 条残留。
+- **换址轮回显一致性**: 由代码结构保证 (ControlState 单一构造点, 每轮随
+  cur_addr 重建), 真机未另开第二个浏览器标签复核 (遵"真开一次"口径)。
+
+## 4. 人工清单 (移交 QA / 架构师)
+
+- [ ] 托盘**右键**: 菜单弹出后停留、不消失, 主窗口不被拉起 (本轮修复的用户实测场景)。
+- [ ] 托盘**左键单击/双击**: 主窗口恢复并聚焦;关窗后托盘图标三态切换不受影响。
+- [ ] 壳内管理台页头按钮 (dev-ui 波1 改调本端点): 点击 → 默认浏览器开管理台;
+      "已复制/没弹出"降级路径仅在端点失败时出现。
+- [ ] 浏览器打开的 `addr` 与当前管理台地址一致 (含改过端口重启后 fleet.json 恢复值)。
+
+## 5. 交接 / 遗留
+
+- dev-ui: `POST /api/open-console` 已就绪 (无请求体, 返回 `{"ok":true,"addr":...}`);
+  页面按钮改调此端点属波1 另一半, 本报告未涉及。
+- 换绑后的回显正确性建议 QA 在跑 FR-13 套件时顺带加一条
+  (POST /api/manager/addr 后再 POST /api/open-console, 核对 addr)。
+- README/手册若提及托盘操作, 文档席可补一句"左键恢复窗口, 右键菜单" (ADR-21④ 口径)。
