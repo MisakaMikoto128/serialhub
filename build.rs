@@ -135,7 +135,7 @@ fn decode_png_bytes(bytes: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
         png::ColorType::Rgba => raw.to_vec(),
         png::ColorType::Rgb => {
             let mut v = Vec::with_capacity(raw.len() / 3 * 4);
-            for px in raw.chunks_exact(3) {
+            for px in raw.as_chunks::<3>().0 {
                 v.extend_from_slice(px);
                 v.push(255);
             }
