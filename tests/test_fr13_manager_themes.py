@@ -56,8 +56,9 @@ from conftest import (
     wait_row_phase,
 )
 
-# ADR-18② 内置主题清单 (任务契约: 内置 light/dark/example-oreo)
-REQUIRED_BUILTIN = ("light", "dark", "example-oreo")
+# ADR-18② 内置主题清单 (任务契约: 内置 light/dark/example-oreo; Sprint 10 收口: +win95,
+# dev 单测 themes.rs builtin_contains_three_themes 已同步钉四套)
+REQUIRED_BUILTIN = ("light", "dark", "example-oreo", "win95")
 
 
 # ------------------------------------------------------------------ 进程工厂

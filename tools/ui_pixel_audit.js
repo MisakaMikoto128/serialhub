@@ -3,11 +3,16 @@
  * UI-1 像素审计 (ADR-16②, Sprint 6) — SerialHub 管理台控件尺度实测
  *
  * 断言 (spec UI-1 / ADR-16②, 不许"差不多"):
- *   1. 全站可见 button/input/select 的渲染高度 ∈ {28, 34}px (容差 0.5px) —— 两档令牌;
- *   2. 圆角 (四角) = 8px (容差 0.5px) —— --ctl-radius 统一令牌;
+ *   1. 全站可见 button/input/select 的渲染高度 ∈ {28, 34}px (容差 0.5px) —— 两档令牌
+ *      (--ctl-h / --ctl-h-sm, 各主题同值, 不随主题变);
+ *   2. 圆角 (四角) = 当前主题 --ctl-radius 期望值 (容差 0.5px) —— Sprint 10 主题感知口径:
+ *      每轮审计先读页面 #themeCss 得当前主题, 再 GET /themes/<主题>.css 解析出该主题的
+ *      --ctl-radius 作为期望, 实测必须 = 期望 ±0.5 (内置 light/dark/example-oreo = 8px
+ *      与旧口径一致; win95 = 0 直角, 不再被 8px 硬断言误杀)。主题 CSS 取不到或缺
+ *      --ctl-radius 令牌 → 审计硬失败 (期望值不许猜)。
  *   2b. 修复轮 D2 口径: 组合条带 (容器带 data-strip 标记, 如页签/ASCII-HEX 段控) 的
  *       内部子元素圆角由容器承载 —— 子元素免圆角断言, 但高度断言不豁免;
- *       同时断言每个 data-strip 容器自身四角圆角必须 8±0.5px (严格性不降)。
+ *       同时断言每个 data-strip 容器自身四角圆角 = 当前主题期望 ±0.5px (严格性不降)。
  *
  * 做法 (真跑真断言, 不目测):
  *   - 自拉真后端 (target/release/serialhub.exe, 默认 127.0.0.1:8080, 临时 fleet 清单);
@@ -22,6 +27,9 @@
  * 运行 (项目根):
  *   NODE_PATH="$(npm root -g)" node tools/ui_pixel_audit.js
  *   可选: AUDIT_ADDR=127.0.0.1:8080  AUDIT_SHOTS=1 (只截图不断言)
+ *   可选: AUDIT_THEME=<name> 单主题审计 (light/dark/example-oreo/win95...):
+ *     落 localStorage(sh_theme) 后重载, 七轮全部在该主题下执行 (R7 不再切深色),
+ *     截图带主题前缀, 顺带存管理台全景到 docs/team/reports/qa-sprint10/。
  * 串口纪律: 只用 COM1 (审计桥), 全程禁止碰 COM8。审计结束强杀自家后端进程。
  * ========================================================================== */
 "use strict";
@@ -43,8 +51,10 @@ const ONLY_SHOTS = !!process.env.AUDIT_SHOTS;
 
 const ALLOWED_H = [28, 34];
 const TOL_H = 0.5;
-const WANT_RADIUS = 8;
 const TOL_R = 0.5;
+/* Sprint 10 主题感知: AUDIT_THEME 非空 = 单主题审计 (全轮锁定该主题);
+ * 空 = 沿用旧流程 (默认浅色起跑, R7 切深色复测)。圆角期望一律从主题 CSS 实时解析。 */
+const AUDIT_THEME = process.env.AUDIT_THEME || "";
 
 // ---- playwright 解析: 优先 NODE_PATH, 退回 Windows npm 全局根 ----------------
 function loadPlaywright() {
@@ -78,6 +88,31 @@ async function waitHttp(url, timeoutMs, what) {
     await new Promise((s) => setTimeout(s, 150));
   }
   throw new Error(`${timeoutMs}ms 内未就绪: ${what} (${url})`);
+}
+
+// ---- Sprint 10 主题感知: 圆角期望值从主题 CSS 实时解析 (缓存/主题) -----------
+// 页面当前主题名: #themeCss 的 href (/themes/<name>.css); link 未挂 = 内置浅色 light。
+const THEME_JS = () => {
+  const l = document.getElementById("themeCss");
+  const m = l && (l.getAttribute("href") || "").match(/\/themes\/([^/?#]+)\.css/);
+  return m ? decodeURIComponent(m[1]) : "light";
+};
+
+// GET /themes/<主题>.css 解析 --ctl-radius (px 可省, 如 win95 直角写 0);
+// CSS 取不到或缺令牌 → 抛错硬失败 (期望值不许猜, 不许"差不多")。
+const radiusCache = new Map();
+async function themeRadius(theme) {
+  if (radiusCache.has(theme)) return radiusCache.get(theme);
+  const r = await httpGet(`${BASE}/themes/${encodeURIComponent(theme)}.css`);
+  if (r.code !== 200) {
+    throw new Error(`主题 CSS 取不到: /themes/${theme}.css -> HTTP ${r.code} (后端未内置该主题?)`);
+  }
+  const m = r.body.match(/--ctl-radius\s*:\s*([0-9]+(?:\.[0-9]+)?)(?:px)?/);
+  if (!m) throw new Error(`主题 ${theme}.css 缺 --ctl-radius 令牌, 圆角期望值无法确定`);
+  const v = Number(m[1]);
+  radiusCache.set(theme, v);
+  console.log(`  主题 ${theme}: --ctl-radius 期望 ${v}px`);
+  return v;
 }
 
 function killSelfSweep() {
@@ -134,7 +169,7 @@ const COLLECT_JS = () => {
   }
   return out;
 };
-// D2: data-strip 容器自身仍须 8px 圆角 (视觉由容器承载, 断言上移到容器, 严格性不降)
+// D2: data-strip 容器自身仍须承载圆角 (断言上移到容器, 期望值随当前主题 --ctl-radius, 严格性不降)
 const STRIP_JS = () => {
   const out = [];
   for (const el of document.querySelectorAll("[data-strip]")) {
@@ -217,6 +252,8 @@ const STRIP_JS = () => {
 
     async function audit(round, shot) {
       await page.waitForTimeout(250);                     // 布局/动画落定
+      const theme = await page.evaluate(THEME_JS);        // Sprint 10: 本轮生效主题
+      const wantR = await themeRadius(theme);             // 该主题 --ctl-radius 期望值
       const file = path.join(SHOTS_DIR, shot);
       await page.screenshot({ path: file, fullPage: false });
       const ctrls = await page.evaluate(COLLECT_JS);
@@ -226,42 +263,65 @@ const STRIP_JS = () => {
         const hOk = ALLOWED_H.some((h) => Math.abs(c.height - h) <= TOL_H);
         if (!hOk) why.push(`高度 ${c.height}px ∉ {28,34}±0.5`);
         if (!c.strip) {                                   // D2: 条带内子元素圆角由容器承载, 免断言 (高度不豁免)
-          const rBad = c.radius.filter((v) => Math.abs(v - WANT_RADIUS) > TOL_R);
-          if (rBad.length) why.push(`圆角 [${c.radius.join("/")}]px ≠ 8±0.5`);
+          const rBad = c.radius.filter((v) => Math.abs(v - wantR) > TOL_R);
+          if (rBad.length) why.push(`圆角 [${c.radius.join("/")}]px ≠ ${wantR}±0.5 (主题 ${theme})`);
         }
         if (why.length) { bad++; violations.push({ round, ...c, reason: why.join("; ") }); }
       }
       const strips = await page.evaluate(STRIP_JS);
       let stripBad = 0;
       for (const s of strips) {
-        const rBad = s.radius.filter((v) => Math.abs(v - WANT_RADIUS) > TOL_R);
+        const rBad = s.radius.filter((v) => Math.abs(v - wantR) > TOL_R);
         if (rBad.length) {
           stripBad++; bad++;
           violations.push({ round, selector: s.selector, where: "strip-container",
-            height: "", radius: s.radius, reason: `条带容器圆角 [${s.radius.join("/")}]px ≠ 8±0.5` });
+            height: "", radius: s.radius, reason: `条带容器圆角 [${s.radius.join("/")}]px ≠ ${wantR}±0.5 (主题 ${theme})` });
         }
       }
-      rounds.push({ round, shot, controls: ctrls.length, strips: strips.length, violations: bad });
-      console.log(`  ${round}: 截图 ${path.relative(ROOT, file)} | 可见控件 ${ctrls.length} + 条带容器 ${strips.length} | 违例 ${bad}`);
+      rounds.push({ round, shot, theme, wantR, controls: ctrls.length, strips: strips.length, violations: bad });
+      console.log(`  ${round} [${theme}, 期望圆角 ${wantR}px]: 截图 ${path.relative(ROOT, file)} | 可见控件 ${ctrls.length} + 条带容器 ${strips.length} | 违例 ${bad}`);
+    }
+
+    // Sprint 10 AUDIT_THEME: 单主题审计 —— 落 localStorage 后重载, 七轮全部锁定该主题
+    // (页面 <head> 预挂逻辑会按 sh_theme 挂 #themeCss; 桥在后端, 重载不丢 "开着桥" 态)
+    const TAG = AUDIT_THEME ? `ui-audit-${AUDIT_THEME}-` : "ui-audit-";
+    if (AUDIT_THEME) {
+      await page.evaluate((t) => { try { localStorage.setItem("sh_theme", t); } catch (_) {} }, AUDIT_THEME);
+      await page.reload({ waitUntil: "networkidle", timeout: 20000 });
+      await page.waitForSelector("#btnNew", { timeout: 10000 });
+      await page.waitForFunction((t) => {
+        const l = document.getElementById("themeCss");
+        return !!l && (l.getAttribute("href") || "").includes("/themes/" + t + ".css");
+      }, AUDIT_THEME, { timeout: 5000 });
+      await page.waitForTimeout(400);                     // 换肤渲染落定
+      console.log(`单主题审计: 全轮锁定 ${AUDIT_THEME}`);
     }
 
     console.log(`审计目标: ${BASE} (桥 qa-ui-audit@COM1 open, listen ${listenPort})`);
     // R1 仪表盘 (开着桥)
-    await audit("R1-仪表盘", "ui-audit-1-dashboard.png");
+    await audit("R1-仪表盘", TAG + "1-dashboard.png");
+    if (AUDIT_THEME) {
+      // 单主题审计顺带存管理台全景 (fullPage) 到 qa 报告目录
+      const panoDir = path.join(ROOT, "docs", "team", "reports", "qa-sprint10");
+      fs.mkdirSync(panoDir, { recursive: true });
+      const pano = path.join(panoDir, `admin-panorama-${AUDIT_THEME}.png`);
+      await page.screenshot({ path: pano, fullPage: true });
+      console.log(`  管理台全景 (${AUDIT_THEME}): ${path.relative(ROOT, pano)}`);
+    }
     // R2 新建桥弹窗
     await page.click("#btnNew");
     await page.waitForSelector("#dlgNew[open]", { timeout: 5000 });
-    await audit("R2-新建桥弹窗", "ui-audit-2-new-dialog.png");
+    await audit("R2-新建桥弹窗", TAG + "2-new-dialog.png");
     await page.click("#btnDlgX");
     await page.waitForSelector("#dlgNew[open]", { state: "detached" }).catch(() => {});
     // R3-R5 抽屉三页签
     await page.locator(".bcard", { hasText: "qa-ui-audit" }).locator(".act-cfg").first().click();
     await page.waitForSelector("#drawer:not([hidden])", { timeout: 5000 });
-    await audit("R3-抽屉·设置", "ui-audit-3-drawer-cfg.png");
+    await audit("R3-抽屉·设置", TAG + "3-drawer-cfg.png");
     await page.click("#tb-tap");
-    await audit("R4-抽屉·串口数据", "ui-audit-4-drawer-tap.png");
+    await audit("R4-抽屉·串口数据", TAG + "4-drawer-tap.png");
     await page.click("#tb-stats");
-    await audit("R5-抽屉·统计", "ui-audit-5-drawer-stats.png");
+    await audit("R5-抽屉·统计", TAG + "5-drawer-stats.png");
 
     // R6 设置弹窗 (Sprint 7 FR-13/14, QA 收口扩轮): 主题选择器 + 管理台网址 +
     //   应用/取消/关闭钮; 页头「打开面板」「设置」钮在每轮全量收集里已覆盖。
@@ -270,26 +330,32 @@ const STRIP_JS = () => {
     await page.waitForTimeout(500);
     await page.click("#btnSettings");
     await page.waitForSelector("#dlgSettings[open]", { timeout: 5000 });
-    await audit("R6-设置弹窗", "ui-audit-6-settings.png");
-    // R7 设置弹窗·深色 (FR-14 无刷新换肤后同口径复测; 兼作深色主题冒烟截图)
-    await page.selectOption("#setTheme", "dark");
-    await page.waitForFunction(() => {
-      const l = document.getElementById("themeCss");
-      return !!l && (l.href || "").includes("/themes/dark.css");
-    }, { timeout: 5000 });
-    await page.waitForTimeout(300);                       // 换肤渲染落定
-    await audit("R7-设置弹窗·深色", "ui-audit-7-settings-dark.png");
-    await page.click("#btnSetX");
+    await audit("R6-设置弹窗", TAG + "6-settings.png");
+    if (AUDIT_THEME) {
+      // 单主题审计: R7 留在本主题 (不再切深色), 与其余各轮同口径
+      await audit(`R7-设置弹窗·${AUDIT_THEME}`, TAG + "7-settings.png");
+      await page.click("#btnSetX");
+    } else {
+      // R7 设置弹窗·深色 (FR-14 无刷新换肤后同口径复测; 兼作深色主题冒烟截图)
+      await page.selectOption("#setTheme", "dark");
+      await page.waitForFunction(() => {
+        const l = document.getElementById("themeCss");
+        return !!l && (l.href || "").includes("/themes/dark.css");
+      }, { timeout: 5000 });
+      await page.waitForTimeout(300);                     // 换肤渲染落定
+      await audit("R7-设置弹窗·深色", "ui-audit-7-settings-dark.png");
+      await page.click("#btnSetX");
+    }
 
     await browser.close();
 
     // ---- 结果 ----
     const total = rounds.reduce((a, r) => a + r.controls, 0);
     console.log("\n===== UI-1 像素审计结论 =====");
-    for (const r of rounds) console.log(`  ${r.round}: 控件 ${r.controls}, 违例 ${r.violations}`);
+    for (const r of rounds) console.log(`  ${r.round} [${r.theme} → 圆角期望 ${r.wantR}px]: 控件 ${r.controls}, 违例 ${r.violations}`);
     if (violations.length === 0) {
       const stripTotal = rounds.reduce((a, r) => a + r.strips, 0);
-      console.log(`PASS — ${total} 个可见控件 × ${rounds.length} 轮全部满足: 高度 ∈ {28,34}±0.5px, 圆角 8±0.5px (组合条带子元素圆角由容器承载, ${stripTotal} 个条带容器圆角实测 8px)`);
+      console.log(`PASS — ${total} 个可见控件 × ${rounds.length} 轮全部满足: 高度 ∈ {28,34}±0.5px, 圆角 = 当前主题 --ctl-radius ±0.5px (Sprint 10 主题感知口径; 组合条带子元素圆角由容器承载, ${stripTotal} 个条带容器圆角实测 = 主题期望)`);
       process.exit(0);
     }
     console.log(`FAIL — ${violations.length}/${total} 违例 (UI-1/ADR-16②):`);

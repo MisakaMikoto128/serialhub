@@ -3103,13 +3103,13 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn themes_endpoints_list_serve_and_traversal_guard() {
         let t = spawn_mgr(None, None).await;
-        // 启动时内置主题已落盘 (ensure_builtin), 列表应含三套内置
+        // 启动时内置主题已落盘 (ensure_builtin), 列表应含四套内置
         let (code, resp) = http_req(t.addr, "GET", "/api/themes", None).await;
         assert_eq!(code, 200, "{resp}");
         let v: Value = serde_json::from_str(&resp).unwrap();
         let list = v["themes"].as_array().expect("themes 数组");
         let get = |n: &str| list.iter().find(|t| t["name"] == n).cloned();
-        for builtin in ["light", "dark", "example-oreo"] {
+        for builtin in ["light", "dark", "example-oreo", "win95"] {
             let e = get(builtin).unwrap_or_else(|| panic!("内置主题 {builtin} 应在列: {resp}"));
             assert_eq!(e["builtin"], true, "{builtin} builtin 标记");
         }
@@ -3133,6 +3133,13 @@ mod tests {
         let (code, body) = http_req(t.addr, "GET", "/themes/dark.css", None).await;
         assert_eq!(code, 200);
         assert!(body.contains(":root") && body.contains("--bg:#14171a"), "{body}");
+        // 静态服务: win95 (直角 + 海军蓝定版值)
+        let (code, body) = http_req(t.addr, "GET", "/themes/win95.css", None).await;
+        assert_eq!(code, 200, "win95.css 应可服务");
+        assert!(
+            body.contains("--ctl-radius:0") && body.contains("--accent:#000080"),
+            "{body}"
+        );
         // 静态服务: 插件文件
         let (code, body) = http_req(t.addr, "GET", "/themes/my-plugin.css", None).await;
         assert_eq!(code, 200);

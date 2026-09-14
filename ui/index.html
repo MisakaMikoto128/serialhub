@@ -251,7 +251,8 @@ input[type=number]{width:100%}
 .term-toolbar .count{font-family:var(--mono);font-size:12px;color:var(--faint)}
 #term{height:44vh;min-height:240px;overflow-y:auto;background:var(--term-bg);
   border:1px solid var(--term-border);border-top:none;border-radius:0 0 var(--radius) var(--radius);
-  padding:8px 12px;font-family:var(--mono);font-size:13px;line-height:1.45}
+  padding:8px 12px;font-family:var(--mono);font-size:13px;line-height:1.45;
+  color:var(--term-ink,var(--ink))} /* FR-14: win95 黑终端需独立前景令牌, 未定义时回退 --ink (其他主题零变化) */
 #term .ln{white-space:pre-wrap;word-break:break-all}
 #term .ts{color:var(--faint)}
 #term .hexrow{white-space:pre;word-break:normal}
@@ -1603,7 +1604,7 @@ $("btnOpenPanel").addEventListener("click", async () => {
    管理台网址改址走两段确认, POST /api/manager/addr 成功后自动跟随新网址 (2s 探测兜底)。 */
 const THEME_KEY = "sh_theme";
 /* 波3 (UX P1-2): 真后端内置第三主题文件名是 example-oreo; 键补齐, 下拉不露英文 ID */
-const THEME_LABEL = { light: "浅色", dark: "深色", oreo: "示例·奥利奥", "example-oreo": "示例·奥利奥" };
+const THEME_LABEL = { light: "浅色", dark: "深色", oreo: "示例·奥利奥", "example-oreo": "示例·奥利奥", win95: "Windows 95" };
 let themeNow = null;                 /* 当前已应用 (或正在应用) 的主题名 */
 let managerAddr = location.host;     /* 管理台当前网址 (IP:端口), 改址成功后更新 */
 try { themeNow = localStorage.getItem(THEME_KEY); } catch (_) {}
