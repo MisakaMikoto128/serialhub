@@ -77,3 +77,25 @@
 - 真壳内手验「打开面板」: 需 302 的 `/api/open-console` 联调 (本报告 S7/S8 为 mock 断言);
   深色主题下气泡为浅底深字 (ink/bg 反色), 已在 R7 深色轮审计口径内核过控件尺度。
 - 气泡在顶栏触发时会自动落到按钮下方 (上方放不下), 属设计行为非 bug。
+
+## §修复 (波内小修): 复制点改「幽灵图标」单一表面
+
+- **用户反馈**: 桥卡片网址处复制图标钮仍是独立描边框, 与网址容器并排成双层框。
+- **改法 (单一表面原则, 全站复制点统一)**: 5 颗复制钮全部改为 `.copy-ghost` 幽灵图标 ——
+  `position:absolute` 内嵌在所在容器右缘 (top:50% 居中), 自身 `border-color/background:
+  transparent` (无框无底), 静默态 `--muted` 灰, hover 才转 `--accent`; **容器是页面上唯一的框**:
+  页头网址条 (padding-right 36 让位) / 桥卡片网址节点 (nwrap padding-right 30) /
+  抽屉数据网址行 (padding-right 44) / 抽屉设置页数据网址 (ctl 加 `has-copy` 定位) /
+  命令块 (code 包进 `.cmd-line`, padding-right 32)。独立图标钮形态已无存量场景。
+- **点击区/高度**: 幽灵钮 28×28 (≥28px 点击区), absolute 不抬高容器 (urlchip 实测高 28 < 34);
+  气泡逻辑零改动。
+- **像素审计口径**: 幽灵钮高 28 ∈ {28,34}、圆角 8 (border 透明但 radius 仍 8) —— 官方工具
+  **无需豁免逻辑, 口径不放松**, 官方跑 + 新 UI 同口径补充跑均 **155 控件 × 7 轮 PASS**
+  (幽灵钮 R1 两颗 / R3 六颗 / R7 深色三颗全入径)。
+- **自验 (mock, 16/16 PASS)**: 幽灵静默态 (边框/底全透明 + muted 灰 + 28/8 + SVG 居中,
+  浅深双主题各验) / hover 转 accent (浅深各验) / 四处截图静默+hover / 气泡贴钮·1.5s 自散·
+  连点不堆叠 / 壳两分支+非壳回归 / 720px 无溢出, 预期外 JS 错误 0。
+- 截图 (本目录): `ghost-light-card.png` · `ghost-light-header-hover.png` ·
+  `ghost-light-drawer-hover.png` · `ghost-light-cmd-hover.png` · `ghost-dark-card.png` ·
+  `ghost-dark-header-hover.png` · `ghost-dark-drawer.png` · `ghost-dark-cmd-hover.png`;
+  `pixel-audit-1..7-*.png` 已更新为幽灵版新 UI 七轮。

@@ -62,8 +62,8 @@ header .spacer{flex:1}
 .hdr-actions{display:flex;align-items:center;gap:12px;flex:none}
 /* 控制台网址块: 展示+复制; 网址可在「设置」里改 (FR-13), 改后本页自动跟随 */
 .urlchip{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--border);
-  background:var(--panel-2);border-radius:var(--ctl-radius);padding:4px 8px 4px 12px;font-size:12px;color:var(--muted);
-  max-width:100%}
+  background:var(--panel-2);border-radius:var(--ctl-radius);padding:4px 36px 4px 12px;font-size:12px;color:var(--muted);
+  max-width:100%;position:relative}
 .urlchip code{font-family:var(--mono);font-size:12px;color:var(--ink);word-break:break-all}
 .quit-btn{border-color:var(--err);color:var(--err);background:var(--panel)}
 .quit-btn:hover:not(:disabled){background:var(--err-bg);border-color:var(--err);color:var(--err-ink)}
@@ -113,12 +113,12 @@ main{max-width:1200px;margin:0 auto;padding:var(--gap)}
 /* 流程图: 串口 ⇄ 桥 ⇄ 网址; 有流量时对应线段点亮并流动 */
 .flow{display:flex;align-items:center;gap:8px}
 .node{border:1px solid var(--border-strong);border-radius:var(--ctl-radius);background:var(--panel-2);
-  padding:4px 12px;text-align:center;min-width:0;flex:0 1 auto;
+  padding:4px 12px;text-align:center;min-width:0;flex:0 1 auto;position:relative;
   display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:50px}
 .node .cap{display:block;font-size:10px;color:var(--faint);letter-spacing:1px;line-height:1.3}
 .node b{font-family:var(--mono);font-size:13px;font-weight:600;display:block;
   max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.node .nwrap{display:flex;align-items:center;gap:4px;justify-content:center;min-width:0}
+.node .nwrap{display:flex;align-items:center;gap:4px;justify-content:center;min-width:0;padding-right:30px}
 .node.bridge{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);flex:0 0 auto}
 .node.bridge .cap{color:inherit;opacity:.75} /* 继承 .node.bridge 的 --accent-ink, 随主题自动成立, 无硬编码 */
 .wire{flex:none;width:44px;height:26px}
@@ -127,9 +127,15 @@ main{max-width:1200px;margin:0 auto;padding:var(--gap)}
 .wire line.on-tx{stroke:var(--tx);animation:dashL .5s linear infinite}
 @keyframes dashR{to{stroke-dashoffset:-9}}
 @keyframes dashL{to{stroke-dashoffset:9}}
-/* ADR-21①: 复制动作图标钮 (28px 紧凑档, 图标内联居中, 尺寸/圆角走 UI-1 令牌) */
-.icon-btn{flex:none;width:28px;height:var(--ctl-h-sm);padding:0}
-.icon-btn svg{width:15px;height:15px;display:block}
+/* ADR-21① + 波内小修 (单一表面原则): 复制点全站统一为「幽灵图标」——
+   absolute 内嵌在所在容器 (页头网址条 / 桥卡片网址节点 / 抽屉网址行 / 命令块) 右缘,
+   自身无框无底、不抬高容器, 静默态灰 (muted), hover 才转 accent;
+   容器是页面上唯一的框, 独立复制钮不再存在 */
+.copy-ghost{position:absolute;right:6px;top:50%;transform:translateY(-50%);
+  width:28px;height:var(--ctl-h-sm);padding:0;border-color:transparent;background:transparent;
+  color:var(--muted)}
+.copy-ghost:hover:not(:disabled){color:var(--accent);background:transparent;border-color:transparent}
+.copy-ghost svg{width:15px;height:15px;display:block}
 
 /* 速率行: 数字 + 最近 60s 火花线 */
 .rates{display:flex;align-items:center;gap:8px 16px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
@@ -165,7 +171,7 @@ main{max-width:1200px;margin:0 auto;padding:var(--gap)}
 button{background:var(--panel-2);border:1px solid var(--border-strong);border-radius:var(--ctl-radius);
   height:var(--ctl-h);padding:0 var(--ctl-px);font-size:var(--ctl-fs);color:var(--ink);
   display:inline-flex;align-items:center;justify-content:center;white-space:nowrap}
-/* 紧凑档 (--ctl-h-sm): 仅工具条/标题条/侦听工具条内小按钮 (复制图标钮的高度在 .icon-btn 自带) */
+/* 紧凑档 (--ctl-h-sm): 仅工具条/标题条/侦听工具条内小按钮 (幽灵复制钮高度在 .copy-ghost 自带) */
 .quit-btn,.x-btn,.seg button,.term-toolbar>button{height:var(--ctl-h-sm)}
 /* 波3 (UX P2-1): 页头钮统一标准档 34 —— 新钮与原住民同排同高, 不再有"两代按钮" */
 #btnQuit{height:var(--ctl-h)}
@@ -178,6 +184,8 @@ button.danger.armed{background:var(--err);border-color:var(--err);color:var(--er
 .field{display:flex;align-items:center;gap:8px;margin-bottom:8px}
 .field>label{width:72px;flex:none;color:var(--muted);font-size:12px;white-space:nowrap}
 .field .ctl{flex:1;display:flex;align-items:center;gap:8px;min-width:0}
+.has-copy{position:relative} /* 单一表面: 幽灵复制钮的定位容器 */
+#cfDataUrl{padding-right:30px}
 .field .ctl button{white-space:nowrap}
 .field .ctl select{flex:1}
 .field .ctl input[type=text]{flex:1}
@@ -219,6 +227,8 @@ input[type=number]{width:100%}
 .equiv summary{cursor:pointer;letter-spacing:1px;font-size:11px;color:var(--faint)}
 .equiv summary:hover{color:var(--accent)}
 .equiv code{display:block;font-family:var(--mono);font-size:12px;word-break:break-all;color:var(--ink)}
+.cmd-line{position:relative} /* 命令块: 幽灵复制钮内嵌在等宽文本面右缘 */
+#cfEquiv{padding-right:32px}
 
 /* 统计卡 */
 .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}
@@ -270,8 +280,8 @@ dialog::backdrop{background:rgba(28,38,48,.4)}
 #drawer[hidden],#mask[hidden]{display:none}
 .dr-head{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--border)}
 .dr-head h2{font-size:15px;margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
-.dr-dataurl{display:flex;align-items:center;gap:8px;padding:8px 16px;border-bottom:1px solid var(--border);
-  background:var(--panel-2);font-size:12px;color:var(--muted);flex-wrap:wrap}
+.dr-dataurl{display:flex;align-items:center;gap:8px;padding:8px 44px 8px 16px;position:relative;
+  border-bottom:1px solid var(--border);background:var(--panel-2);font-size:12px;color:var(--muted);flex-wrap:wrap}
 .dr-dataurl code{font-family:var(--mono);font-size:12px;color:var(--ink);word-break:break-all}
 .dr-tabs{display:flex;border-bottom:1px solid var(--border);border-radius:var(--ctl-radius);overflow:hidden}
 .dr-tabs button{flex:1;border:none;border-radius:0;background:var(--panel-2);height:var(--ctl-h);padding:0 4px;
@@ -323,7 +333,7 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
   <span class="spacer"></span>
   <span class="urlchip" title="管理台网址; 各桥有自己的数据网址, 程序请连各桥的">
     <span>控制台网址</span><code id="consoleUrl">…</code>
-    <button id="btnCopyUrl" type="button" class="icon-btn" title="复制" aria-label="复制控制台网址"></button>
+    <button id="btnCopyUrl" type="button" class="copy-ghost" title="复制" aria-label="复制控制台网址"></button>
   </span>
   <span class="hdr-actions">
     <button id="btnOpenPanel" type="button" title="在系统默认浏览器打开管理台; 弹不出来时会自动复制网址">打开面板</button>
@@ -464,7 +474,7 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
         <line class="wrx" x1="2" y1="8" x2="42" y2="8"/><line class="wtx" x1="2" y1="18" x2="42" y2="18"/>
       </svg>
       <div class="node net" title="数据网址: 网页/程序连接这座桥用"><span class="cap">网址</span>
-        <span class="nwrap"><b class="n-listen"></b><button type="button" class="icon-btn" title="复制" aria-label="复制数据网址给网页/程序"></button></span></div>
+        <span class="nwrap"><b class="n-listen"></b><button type="button" class="copy-ghost" title="复制" aria-label="复制数据网址给网页/程序"></button></span></div>
     </div>
     <div class="rates">
       <span class="rgrp"><span class="rlab"><span class="rdot"></span>收 · 串口→网页</span>
@@ -489,7 +499,7 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
     <button id="drClose" type="button" title="关闭抽屉 (Esc)">✕ 关闭</button>
   </div>
   <div class="dr-dataurl">数据网址 <code id="drDataUrl">—</code>
-    <button id="btnDrCopyUrl" type="button" class="icon-btn" title="复制" aria-label="复制数据网址给网页/程序"></button>
+    <button id="btnDrCopyUrl" type="button" class="copy-ghost" title="复制" aria-label="复制数据网址给网页/程序"></button>
   </div>
   <div class="dr-tabs" role="tablist" aria-label="桥管理" data-strip>
     <button id="tb-cfg" type="button" role="tab" aria-selected="true" aria-controls="pan-cfg">设置</button>
@@ -545,19 +555,19 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
       <div class="send-hint">开着: 串口断了会自动连回来; 关掉: 串口断了就直接停止, 需要手动重新打开</div>
       <div class="field">
         <label>数据网址</label>
-        <div class="ctl"><code id="cfDataUrl"></code>
-          <button id="btnCfCopyUrl" type="button" class="icon-btn" title="复制" aria-label="复制数据网址给网页/程序"></button></div>
+        <div class="ctl has-copy"><code id="cfDataUrl"></code>
+          <button id="btnCfCopyUrl" type="button" class="copy-ghost" title="复制" aria-label="复制数据网址给网页/程序"></button></div>
       </div>
       <div class="send-hint">网页/程序打开「数据网址」就能连到这个串口; 同一串口同时只归一座桥</div>
       <div id="cfLockHint" class="lock-hint"></div>
       <div id="cfErr" class="form-err"></div>
       <details class="equiv">
         <summary>命令行写法 (给脚本用)</summary>
-        <code id="cfEquiv"></code>
+        <div class="cmd-line"><code id="cfEquiv"></code>
+          <button id="btnCfCopyCmd" type="button" class="copy-ghost" title="复制" aria-label="复制命令行写法"></button></div>
         <div class="send-hint">在命令行里跑这条, 效果和这座桥完全一样; 不想弹窗口就加 --headless</div>
       </details>
       <div class="actions" style="margin-top:12px;display:flex;align-items:center;gap:8px">
-        <button id="btnCfCopyCmd" type="button" class="icon-btn" title="复制" aria-label="复制命令行写法"></button>
         <button id="btnCfSave" type="button" class="primary" title="保存这座桥的设置">保 存</button>
       </div>
     </section>
@@ -732,14 +742,14 @@ function showCopyTip(btn, ok) {
   copyTipTimer = setTimeout(() => tip.classList.remove("show"), 1500);
 }
 
-/* 复制图标 (两叠圆角矩形, 内联 SVG 不引外部库): 单源注入全部图标钮, 模板卡内那颗一并盖 */
+/* 复制图标 (两叠圆角矩形, 内联 SVG 不引外部库): 单源注入全部幽灵复制钮, 模板卡内那颗一并盖 */
 const COPY_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
   + 'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
   + '<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>'
   + '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
-for (const b of document.querySelectorAll(".icon-btn")) b.innerHTML = COPY_ICON;
+for (const b of document.querySelectorAll(".copy-ghost")) b.innerHTML = COPY_ICON;
 {
-  const tplBtn = $("tplCard").content.querySelector(".icon-btn");
+  const tplBtn = $("tplCard").content.querySelector(".copy-ghost");
   if (tplBtn) tplBtn.innerHTML = COPY_ICON;
 }
 
@@ -790,7 +800,7 @@ function buildCard(id) {
     serial: root.querySelector(".n-serial"),
     nName: root.querySelector(".n-name"),
     listen: root.querySelector(".n-listen"),
-    copyUrl: root.querySelector(".icon-btn"),
+    copyUrl: root.querySelector(".copy-ghost"),
     wires: [...root.querySelectorAll(".wire")],
     vRx: root.querySelector(".v-rx"),
     vTx: root.querySelector(".v-tx"),
