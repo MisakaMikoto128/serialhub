@@ -2221,6 +2221,24 @@ mod tests {
         }
     }
 
+    /// 轮询 /api/status 直到 clients 达到期望值 (确认 client_loop 已注册进广播/可处理
+    /// 上行帧); 慢 runner (ubuntu CI) 上握手返回 ≠ 任务已跑完, 直接注入会时序脆弱。
+    async fn wait_clients(addr: SocketAddr, want: usize, timeout: Duration) {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let (_, resp) = http_req(addr, "GET", "/api/status", None).await;
+            let v: Value = serde_json::from_str(&resp).unwrap_or(Value::Null);
+            if v["clients"].as_u64() == Some(want as u64) {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "等待 clients=={want} 超时"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     // ---- ADR-21②: /api/open-console ----
 
     /// 端点级测试: 真 ControlState + 真 control_router, 但 opener 注入记录闭包
@@ -2595,14 +2613,17 @@ mod tests {
         let (txq_tx, txq_rx) = std_mpsc::channel::<Vec<u8>>();
         b.ctx.set_tx(txq_tx);
         let mut ws = ws_handshake(t.addr, "/ws").await;
+        // 确认 client_loop 已跑起来 (clients 计 1) 再注入 —— 慢 runner 上握手返回
+        // ≠ 服务端任务已调度, 直接注入会时序脆弱 (ubuntu CI v1.5.1 实测)
+        wait_clients(t.addr, 1, Duration::from_secs(5)).await;
         // RX 注入 broadcast → WS 下行二进制帧 (与串口读线程同一条通路)
-        wait_receiver(&b.ctx.bc_tx, Duration::from_secs(2)).await;
+        wait_receiver(&b.ctx.bc_tx, Duration::from_secs(5)).await;
         b.ctx.bc_tx.send(b"hello-fleet".to_vec()).unwrap();
-        let got = ws_recv_binary(&mut ws, Duration::from_secs(2)).await;
+        let got = ws_recv_binary(&mut ws, Duration::from_secs(5)).await;
         assert_eq!(got, b"hello-fleet");
         // TX: WS 二进制 → tx 队列 (帧语义零变化)
         ws_send_masked(&mut ws, b"to-port").await;
-        let got = txq_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let got = txq_rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(got, b"to-port");
         // clients 计 1 (Drop 兜底计数不变)
         let (_, resp) = http_req(t.addr, "GET", "/api/status", None).await;
