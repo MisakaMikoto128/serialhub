@@ -349,8 +349,10 @@ dialog::backdrop{background:rgba(28,38,48,.4)}
 .rec-empty{font-size:12px;color:var(--faint);padding:12px 0}
 
 /* 旁路转发 (Sprint13 B2 / FR-20): 抽屉状态行 + 卡片状态微标
-   (未配置不显示; 已配置 已连接=绿 / 未连接=琥珀, 颜色走状态令牌) */
-.fwd-stat{display:none;align-items:center;gap:6px;margin:-2px 0 8px 80px;font-size:12px;
+   (未配置不显示; 已配置 已连接=绿 / 未连接=琥珀, 颜色走状态令牌)
+   状态行与同抽屉 hint/lock-hint 同基准: 全宽落 label 左缘, 行距走表单 8px 节奏
+   (v2.0.1 对齐修复轮: 旧 80px 缩进 + -2px 负边距是全表单唯一出格的文本行) */
+.fwd-stat{display:none;align-items:center;gap:6px;margin:8px 0;font-size:12px;
   color:var(--muted);word-break:break-all}
 .fwd-stat.show{display:flex}
 .fwd-stat .fdot{width:8px;height:8px;border-radius:50%;flex:none}
@@ -358,7 +360,7 @@ dialog::backdrop{background:rgba(28,38,48,.4)}
 .fwd-stat.ok .fdot{background:var(--ok)}
 .fwd-stat.off{color:var(--warn-ink)}
 .fwd-stat.off .fdot{background:var(--warn)}
-.fwd-stat b{font-family:var(--mono)}
+.fwd-stat b{font-family:var(--mono);word-break:normal;overflow-wrap:anywhere} /* 目标地址不拆开断行 (192.168.1.20:9000 整段走, 实在放不下才让位) */
 .mini.fwdstat b{color:var(--gray-ink)}
 .mini.fwdstat.ok b{color:var(--ok-ink)}
 .mini.fwdstat.off b{color:var(--warn-ink)}
@@ -386,7 +388,6 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
   header{padding:8px 12px}
   .field>label{width:60px}
   .ferr{margin-left:68px}
-  .fwd-stat{margin-left:68px}
   #drawer{width:100vw}
   .node b{max-width:96px}
   .wire{width:30px}

@@ -148,3 +148,44 @@
 
 - **出包提醒** (同波 1): 壳内 UI 是 include_str! 嵌入, 本次改动需随下次构建进壳才会出现在
   桌面壳里; 浏览器页/`--ui-dir` 直读磁盘即时生效。
+
+---
+
+# 对齐修复轮 — 「旁路转发」组间距/缩进归位 (dev-ui 301, 2026-09-15)
+
+- 变更文件: **仅 `ui/index.html`** (3 处 CSS, 未碰结构/文案/JS/src/tests) · 未 commit
+- 依据: 用户截图反馈「旁路转发一行与同表单其他字段行不齐」· 基准 = 同抽屉 cf 表单既有栅格
+
+## 10. 根因 (Playwright 实测, 非目测)
+
+对 cf 表单逐行实测 `getBoundingClientRect` (1120×780 = 桌面壳默认窗, 桥已配转发运行态):
+
+- **字段行与 hint 本来就在栅格上**: 旁路转发 label 左缘/宽度/控件左缘 (634/72/714) 与
+  波特率、网址端口等完全同列; 行距 field→hint→下行 = 8/0/8px, 与数据网址块同拍。
+- **出格的是组内状态行 `.fwd-stat`** (「转发未连接 — …」): 全表单唯一 80px 缩进 + `-2px`
+  负上边距的文本行 —— 夹在 hint (label 左缘) 与 lock-hint (label 左缘) 之间, 左缘 634→714→634
+  三行连着三个基准; 474px 宽被 80px 缩进挤到 394px, 目标地址 `192.168.1.20:9000` 被断成
+  「…900/0」两截、状态文字拖成三行 —— 即用户看到的"明显是后加的"。
+- `.ferr` (校验红字框) 的 80px 缩进**有意保留**: 输入框随身报错语义, 与新建桥弹窗
+  (npErrName 等) 同模式且 QA 已验收, 不属本组常态视图。
+
+## 11. 修复 (同栅格、同 gap、同缩进)
+
+1. `.fwd-stat` margin `-2px 0 8px 80px` → `8px 0`: 全宽落 label 左缘, 行距走表单 8px 节奏
+   (hint/lock-hint/rec-live 等同抽屉状态行同款全宽基准)。
+2. `.fwd-stat b` 补 `word-break:normal;overflow-wrap:anywhere`: 转发目标地址整段走,
+   放不下才让位, 不再从 IP 中间拆断。
+3. 删 720px 媒体查询里 `.fwd-stat{margin-left:68px}` 孤儿覆盖 (基准改全宽后不再需要)。
+
+修复后实测 (1120 运行态): hint / fwd-stat / lock-hint 左缘 634/634/634, 行距 8/8px,
+状态行单行 19px (前: 36px 三行); 720px 窄屏同拍 (label 60px 档, 左缘 14/14/14)。
+
+## 12. 自验
+
+- **tools/ui_pixel_audit.js 复跑全绿**: PASS — 168 可见控件 × 7 轮, 高度 ∈{28,34}±0.5、
+  圆角 = 主题 --ctl-radius ±0.5, 违例 0 (R3 抽屉·设置 37 控件含 cfForward)。
+- 截图 (`docs/team/reports/dev-sprint13-ui/`, 1120 = 桌面壳默认窗尺寸):
+  `forward-align-before-1120` (修复前运行态) / `forward-align-after-1120` /
+  `forward-align-after-1440` (审计标准宽) / `forward-align-after-720` (窄屏) /
+  `forward-align-compare` (前|后并排)。
+- 出包提醒: 已 `cargo build --release` 让改动进壳验证过; 桌面壳需随下次发版重打。
