@@ -352,7 +352,9 @@ dialog::backdrop{background:rgba(28,38,48,.4)}
    (未配置不显示; 已配置 已连接=绿 / 未连接=琥珀, 颜色走状态令牌)
    状态行与同抽屉 hint/lock-hint 同基准: 全宽落 label 左缘, 行距走表单 8px 节奏
    (v2.0.1 对齐修复轮: 旧 80px 缩进 + -2px 负边距是全表单唯一出格的文本行) */
-.fwd-stat{display:none;align-items:center;gap:6px;margin:8px 0;font-size:12px;
+.fwd-field{margin-top:11px}
+.fwd-field + .send-hint{margin-bottom:7px}
+.fwd-stat{display:none;align-items:center;gap:6px;margin:16px 0 14px;padding-top:10px;border-top:1px dashed var(--border);font-size:12px;
   color:var(--muted);word-break:break-all}
 .fwd-stat.show{display:flex}
 .fwd-stat .fdot{width:8px;height:8px;border-radius:50%;flex:none}
@@ -669,7 +671,7 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
           <button id="btnCfCopyUrl" type="button" class="copy-ghost" title="复制" aria-label="复制数据网址给网页/程序"></button></div>
       </div>
       <div class="send-hint">网页/程序打开「数据网址」就能连到这个串口; 同一串口同时只归一座桥</div>
-      <div class="field">
+      <div class="field fwd-field">
         <label for="cfForward">旁路转发</label>
         <div class="ctl"><input id="cfForward" type="text" placeholder="留空 = 不转发; 例: 192.168.1.20:9000"
           title="旁路转发: 把串口收到的数据同步转发给这个地址" /></div>
