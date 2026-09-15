@@ -235,3 +235,92 @@
 - 截图 (`docs/team/reports/dev-sprint13-ui/`): rhythm-before-1280 (基线, 间距表见 §13.4) /
   rhythm-after-1280 (同视口对比) / rhythm-after-ferr (红字态) / rhythm-after-rec
   (录像列表) / rhythm-after-dark-1280 / rhythm-after-dark-720 / rhythm-after-720。
+
+---
+
+# 波 3 — 回放语义文案增强 (dev-ui 301, 2026-09-15)
+
+- 变更文件: **仅 `ui/index.html`** (回放状态行文案/完成态 CSS/回放脚本状态机 + 回放钮 tooltip;
+  未 commit, 未碰 src/tests)
+- 依据: 用户实测反馈「回放看不到结果」· 语义裁定: **回放 = 把录像里 tx 方向的帧按原始时序
+  重发到串口 (结果在设备侧, 终端不显示回放内容)** —— 已写进状态行/通知/tooltip
+- 自验: mock 契约控制面 (127.0.0.1:18502, 按 src/record.rs 已交付契约仿真:
+  `b.replay={file,speed,loop,frames,bytes}|null` 自然结束即清) + Playwright **22 断言全过**,
+  预期外页面 JS 异常 0。脚本 `output/sprint13-ui-mock/sprint13_ui_w3_test.cjs` (gitignored)。
+
+## 15. 改动 (回放进行中 / 完成 / 防呆)
+
+1. **进行中文案**: 原「正在回放 <file> · N 倍速 · 数据发给这座桥的串口」→
+   「**回放中** <file> · N 倍速 · 预计 M:SS — **正把录制时发出的数据重发到串口
+   (结果在设备侧; 终端不显示回放内容)**」(循环后缀 / `· 已发 N` 后端进度保留);
+   「回放开始」通知同步换此口径。核心答复用户: 回放内容不走终端, 结果在设备那头。
+2. **预计时长** = 录像 `durationSec ÷ speed` (recordings 列表现成, 新增 `estReplaySec()`):
+   UI 点「回放」立即亮态即算; 后端 `b.replay` 轮询收编时保留/按列表补算。列表缺
+   durationSec 时省略「预计」段, 功能不破 (不谎报)。
+3. **回放完成**: 预计时长到点 (recTick 1s 节拍) 状态行转绿 (ok 令牌, `.done`)
+   「**回放完成** — 录制时发出的数据已按原时序发给串口」, **2s 后消散**; 后端自然结束清
+   `b.replay` 的轮询收点也转同一完成态 (elapsed ≥ 预计−1.5s 才转, 桥停等提前终止不误报);
+   **loop=true 持续进行中不显示完成**; 用户「停止回放」先标 `stopped`, 收点直接退态
+   不误报完成。完成态停止钮收起 (已完成无停止可言)。
+4. **防呆 tooltip**: 行内回放钮 title →「回放重发的是录制期间这座桥「发出」的数据
+   (按上面选的速度); 只录制过设备上报的数据则回放无输出」。
+
+## 16. 契约缺口: 回放前判定「无 tx 帧」UI 做不到 (留后端, 请 dev-backend 裁决)
+
+- recordings 列表契约只有**总** frames/bytes (rx+tx 合计, `record.rs scan_file` 不分方向),
+  UI 无从在回放前判定无 tx 帧 → 本波只做 tooltip 防呆。建议: 列表每项加 `txFrames`
+  (`parse_recording` 已支持 dir_filter, 扫描分桶即可); UI 按「有则用」: txFrames=0 时
+  置灰回放钮 + title 说明。现状兜底已有: 后端「没有有效帧」报错 → UI 话术
+  「这段录像只录到了设备发来的数据…换一段或重新录一段」(实测路径在)。
+- 已知边缘 (非新债, XTEST P1-2 同源): 回放进行中关抽屉再开, 本地 startTs 重起
+  (后端 `b.replay` 无开始时刻可回推), 完成提示可能晚到/缺席; 状态行/进度不受影响。
+
+## 17. Playwright 自验 (mock 契约, 22/22 PASS)
+
+| 场景 | 结果 |
+|---|---|
+| 防呆 tooltip | 含「发出」+「只录制过设备上报的数据则回放无输出」(截图 17) |
+| 回放触发 | 请求体 `{file,speed:1,loop:false}` 实测正确; 状态行=回放中+文件名+1 倍速+**预计 0:04** (4s 录像÷1)+裁定文案; 通知「回放开始」同口径; b.replay 收编后「已发」进度可见; `__sh.rec.replaying.estSec=4` (截图 18) |
+| 到点完成 | 4s 到点转绿「回放完成」+ 停止钮收起; **2s 后消散** (截图 19) |
+| 循环 | loop=true 上送; 越过预计时长+完成窗口仍「回放中」无完成态; 「停止回放」→ 状态行收 + mock 实收 /replay/stop; 全程无完成误报 (截图 20) |
+| 中途停止 | 非循环 1.2s 停止 → 无「回放完成」误报 |
+| UI-1 / 720px | 停止钮高 28 档; 720px scrollWidth=720 无横向溢出, 长文案换行不破版 (截图 21) |
+| console | 预期外 JS 异常 0 |
+
+截图 (`docs/team/reports/dev-sprint13-ui/`, 编号接波 2): 17-replay-list-tooltip /
+18-replaying / 19-replay-done / 20-replay-loop / 21-720-replaying
+
+- **出包提醒** (同波 1/2): 壳内 UI 是 include_str! 嵌入, 本次改动需随下次构建进壳才会
+  出现在桌面壳里; 浏览器页/`--ui-dir` 直读磁盘即时生效。
+
+---
+
+# 波 4 — 回放可见性: 消费 recordings.txFrames (dev-ui 301, 2026-09-15)
+
+- 变更文件: **仅 `ui/index.html`** (renderRecList 行渲染 + `.rec-tx0` 一条 CSS; 未 commit,
+  未碰 src/tests) · §16 留后端的缺口已由 dev-backend 落地: recordings 列表条目新增
+  `txFrames` (数字; 旧录像无侧车 → null), 本波消费之 —— 回放进行中/完成的既有逻辑不动。
+
+## 18. 改动
+
+1. **行 meta 加 tx 帧数**: `时长 · tx N 帧 · N 字节` (fmtBytes 口径); `txFrames=null`
+   (旧录像) 显示 **「tx ?」** 不置灰 —— 不谎报 0, 与 DEF-2 同哲学。
+2. **tx=0 防呆**: 回放钮置灰 (disabled, UI-1 尺寸不变) + 行内琥珀提示
+   「**无发出数据 (tx=0), 回放无输出**」(`.rec-tx0`, --warn-ink), 置灰钮 title
+   说明原因与出路 (「要回放请录一段有发出的」)。
+3. **null 判定坑**: 后端发 `"txFrames": null` 而 `Number(null)===0` —— 用
+   `t == null` 先挡 (undefined 同路), 再 `Number.isFinite` 收敛, 只认真数字。
+4. tx=3 行回放请求照发, §15 的进行中文案/预计时长/完成态链路零改动 (回归断言覆盖)。
+
+## 19. Playwright 自验 (w3 脚本扩场景 [7], 全脚本 28/28 PASS)
+
+| 场景 | 结果 |
+|---|---|
+| txFrames=3 | 行显示「tx 3 帧」, 回放可点; 点击后 replay 请求体 file=b1-tx3.jsonl 照发 |
+| txFrames=0 | 行显示「tx 0 帧」; 回放钮 disabled; 行内「无发出数据 (tx=0), 回放无输出」; title 说明原因 |
+| txFrames=null | 行显示「tx ?」; 不置灰、无提示 (旧录像兜底) |
+| 回归 | 波 3 全场景 (文案/预计/完成/循环/停止/720px/UI-1) 重跑全过; 预期外 JS 异常 0 |
+
+截图: `docs/team/reports/dev-sprint13-ui/22-rec-txframes.png` (三态并列)。
+mock 扩展: `/__set {recSet:"mixed"}` 切三态录像列表 (脚本 gitignored 不入库)。
+出包提醒同前: include_str! 嵌入, 需随下次构建进壳。

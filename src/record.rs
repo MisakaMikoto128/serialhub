@@ -7,6 +7,9 @@
 //!
 //! 每帧一行 JSONL 落盘 `{"ts":<相对录制开始毫秒>,"dir":"rx|tx","hex":"小写hex"}`,
 //! 带缓冲 + 500ms 定期 flush; 桥停止/删除/进程退出时自动收尾, **录像文件保留**。
+//! 停止时写侧车索引 `<file>.meta.json` (`{frames,bytes,txFrames,durationSec}`) ——
+//! 列表端点免逐行重扫, 且给出 txFrames (回放可见性: 0 tx 帧 = 回放无输出, 前端
+//! 据此警告); 旧录像/进程硬退无侧车 → 列表回退逐行扫描, txFrames = null。
 //!
 //! 回放 = 把选中录像按行间原始时序 (ts 差 / speed) 写回**串口 TX** (走现有
 //! tx 队列, PortCtx::send_to_port), 用于固件复现/测试注入:
@@ -198,6 +201,7 @@ pub fn start(b: &Arc<Bridge>, dir: &Path) -> Result<String, String> {
     drop(slot);
     let b2 = b.clone();
     let fname = name.clone();
+    let meta_dir = dir.to_path_buf();
     tokio::spawn(async move {
         let mut stop_rx = stop_rx;
         let mut bridge_stop = bridge_stop;
@@ -207,6 +211,7 @@ pub fn start(b: &Arc<Bridge>, dir: &Path) -> Result<String, String> {
         let t0 = Instant::now();
         let mut frames = 0u64;
         let mut bytes = 0u64;
+        let mut tx_frames = 0u64;
         let mut flush = tokio::time::interval(FLUSH_EVERY);
         flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -230,6 +235,7 @@ pub fn start(b: &Arc<Bridge>, dir: &Path) -> Result<String, String> {
                         write_line(&mut w, t0.elapsed().as_millis(), "tx", &data);
                         frames += 1;
                         bytes += data.len() as u64;
+                        tx_frames += 1;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -237,11 +243,30 @@ pub fn start(b: &Arc<Bridge>, dir: &Path) -> Result<String, String> {
             }
         }
         let _ = w.flush();
+        // 侧车索引: 停止时把 txFrames 与 frames/bytes/durationSec 一起落盘
+        // (<file>.meta.json), 列表免重扫; 写完才回报 RecSummary —— stop 返回即侧车就绪。
+        // 进程硬退/任务意外死亡无侧车 → 列表回退逐行扫描 (txFrames=null)。
+        let duration_sec = (t0.elapsed().as_secs_f64() * 10.0).round() / 10.0;
+        let meta_path = {
+            let mut s = meta_dir.join(&fname).into_os_string();
+            s.push(".meta.json");
+            std::path::PathBuf::from(s)
+        };
+        let _ = std::fs::write(
+            &meta_path,
+            json!({
+                "frames": frames,
+                "bytes": bytes,
+                "txFrames": tx_frames,
+                "durationSec": duration_sec,
+            })
+            .to_string(),
+        );
         let _ = done_tx.send(RecSummary { frames, bytes });
         crate::logging::write(
             "info",
             &format!(
-                "桥 {} 录制结束: {fname} ({frames} 帧 / {bytes} 字节)",
+                "桥 {} 录制结束: {fname} ({frames} 帧 / tx {tx_frames} / {bytes} 字节)",
                 b2.id
             ),
         );
@@ -482,9 +507,12 @@ fn parse_recording(path: &Path, dir_filter: Option<&str>) -> Result<Vec<(u64, Ve
 // ============================================================ 录像列表
 
 /// 扫描本桥的录像文件 (文件名前缀 "<桥id>-") → 列表项
-/// [{"file","frames","bytes","startedAt","durationSec"}], 新的在前。
-/// frames/bytes/duration 逐行扫描现算 (录像无 sidecar, 自洽且免状态); startedAt
-/// = 文件 mtime - 末行 ts (文件收尾时刻回退播放时长; ≤500ms flush 误差)。
+/// [{"file","frames","bytes","txFrames","startedAt","durationSec"}], 新的在前。
+/// - 有侧车 (`<file>.meta.json`, 录制停止时落盘): frames/bytes/txFrames/durationSec
+///   直接读侧车, 免逐行重扫 (txFrames = 回放可见性, 前端以 0 tx 帧警告无输出);
+/// - 无侧车 (旧录像 / 录制中文件增长 / 进程硬退): frames/bytes/duration 逐行扫描
+///   现算 (录制中轮询即实时帧数, Q3 口径不变), **txFrames = null** (前端容错);
+/// - startedAt = 文件 mtime - 时长 (有侧车用 durationSec, 无侧车用末行 ts)。
 pub fn list(b: &Bridge, dir: &Path) -> Vec<Value> {
     let prefix = format!("{}-", b.id);
     let mut out = Vec::new();
@@ -502,7 +530,6 @@ pub fn list(b: &Bridge, dir: &Path) -> Vec<Value> {
         if !(name.starts_with(&prefix) && name.ends_with(".jsonl")) {
             continue;
         }
-        let (frames, bytes, last_ts) = scan_file(&path);
         let mtime_ms = e
             .metadata()
             .and_then(|m| m.modified())
@@ -510,18 +537,48 @@ pub fn list(b: &Bridge, dir: &Path) -> Vec<Value> {
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        let started_at = mtime_ms.saturating_sub(last_ts);
-        let duration_sec = (last_ts as f64 / 1000.0 * 10.0).round() / 10.0;
+        let meta_path = {
+            let mut s = path.clone().into_os_string();
+            s.push(".meta.json");
+            PathBuf::from(s)
+        };
+        // (frames, bytes, txFrames, durationSec, startedAt)
+        let (frames, bytes, tx_frames, duration_sec, started_at) = match read_sidecar(&meta_path) {
+            Some((f, by, tx, d)) => {
+                let started_at = mtime_ms.saturating_sub((d * 1000.0).round() as u64);
+                (f, by, json!(tx), d, started_at)
+            }
+            None => {
+                let (f, by, last_ts) = scan_file(&path);
+                let started_at = mtime_ms.saturating_sub(last_ts);
+                let d = (last_ts as f64 / 1000.0 * 10.0).round() / 10.0;
+                (f, by, Value::Null, d, started_at)
+            }
+        };
         out.push(json!({
             "file": name,
             "frames": frames,
             "bytes": bytes,
+            "txFrames": tx_frames,
             "startedAt": started_at,
             "durationSec": duration_sec,
         }));
     }
     out.sort_by_key(|v| -(v["startedAt"].as_u64().unwrap_or(0) as i64));
     out
+}
+
+/// 读侧车 `<file>.meta.json` → (frames, bytes, txFrames, durationSec);
+/// 缺失或任一字段损坏 → None (列表回退逐行扫描, txFrames=null)。
+fn read_sidecar(meta_path: &Path) -> Option<(u64, u64, u64, f64)> {
+    let body = std::fs::read_to_string(meta_path).ok()?;
+    let v: Value = serde_json::from_str(&body).ok()?;
+    Some((
+        v["frames"].as_u64()?,
+        v["bytes"].as_u64()?,
+        v["txFrames"].as_u64()?,
+        v["durationSec"].as_f64()?,
+    ))
 }
 
 /// 逐行扫描: (帧数, 数据字节合计, 末行 ts)。

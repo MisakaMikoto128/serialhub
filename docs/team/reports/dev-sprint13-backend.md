@@ -150,3 +150,43 @@
 留白: MQTT/双向转发仍按 ADR-24② 入计划池; 转发断线期帧不补发 (旁路观测语义,
 1024 缓冲内例外), 供架构师知悉。
 
+---
+
+# 波 3 — recordings 列表 txFrames (回放可见性配套)
+
+- 日期: 2026-09-15 · 变更文件: **仅 `src/record.rs` + `src/fleet.rs`** · 零新增依赖 ·
+  未 commit · 未碰 ui/tests/docs(本报告除外)
+- 依据: 用户实测困惑点 —— 只录了设备上报 (全 rx) 的录像回放无任何输出 (ADR-24⑥ 只回放
+  tx 行), 前端需在回放前警告 "0 tx 帧 = 回放无输出", 数据源 = 列表条目 `txFrames`。
+
+## 10. 交付物 (侧车索引方案)
+
+1. **停止时写侧车**: 录制任务统计 `txFrames` (tx tee 臂独立计数), 收尾时落盘
+   `recordings/<file>.meta.json` = `{"frames":n,"bytes":n,"txFrames":n,"durationSec":x}`
+   (durationSec = 实录时长, 0.1s 精度); **写完才回报 stop** —— record/stop 返回即侧车就绪,
+   列表立即可见。桥停/删触发的自动收尾同样写侧车 (任务侧统一); 进程硬退无侧车走回退。
+2. **GET /api/fleet/<id>/recordings 条目 5→6 字段**: 有侧车直接读 (免逐行重扫, 大录像
+   轮询不再 O(文件)); 无侧车 (旧录像 / **录制中文件** / 进程硬退 / 侧车损坏) 回退逐行
+   扫描现算 frames/bytes/durationSec, **txFrames=null** (前端容错; 录制中轮询即实时帧数,
+   波 1 Q3 口径不变)。startedAt: 有侧车 = mtime - durationSec, 无侧车 = mtime - 末行 ts。
+3. **删录像连带删侧车** (`recordings/delete`): 防孤儿索引 (旧录像无侧车静默忽略)。
+4. 契约变化仅此一处: 列表条目增 `txFrames` (数字|null); record/stop 响应、replay、
+   fleet.json、CLI 均不变。
+
+## 11. 测试与自测 (波 3)
+
+- **cargo test 117/0** (115 + 2): 侧车全链路 (录 3tx+2rx → stop → 侧盘恰四字段 →
+  列表 txFrames==3 → 删录像连带删侧车) + 回退路径 (无侧车/损坏侧车 → 扫描现算、
+  txFrames=null、侧车文件不入列、不崩)。`cargo fmt --check` + `clippy --all-targets` 零警告。
+- **黑盒真机自测 26/26 PASS** (`%TEMP%\sh13_txf_selftest.py`, release exe):
+  18400(管理台)/18401(桥), COM1(桥,autoOpen)↔COM2(pyserial+WS), COM8/COM4 全程未碰。
+  实录 3 tx (WS 上行) + 2 rx (对端注入) → txFrames==3 且与录像文件 tx 行数对账、字节
+  硬对账 (23)、stop 计数与文件一致; 旧录像无侧车/损坏侧车 → txFrames=null 不崩;
+  删录像连带删侧车。测毕按 PID 清理: 零 serialhub.exe 残留、18400/18401 释放、临时目录已删。
+
+## 12. 留白 (波 3)
+
+- rx 帧数按读块拆并 (ADR-6⑤ 既定语义) → 列表 `frames` 在实录间非确定; `txFrames`
+  与 `bytes` 精确 (tx 按入队帧计数, 字节按 hex 实长)。前端警告口径 = `txFrames === 0`。
+- 侧车随 jsonl 同名派生 (`<file>.meta.json`), 手工只删侧车会使其回退扫描 (自愈, 无副作用)。
+

@@ -1696,7 +1696,9 @@ async fn fleet_record_stop(
 }
 
 /// GET /api/fleet/<id>/recordings → {"ok":true,"recordings":[{file,frames,bytes,
-/// startedAt,durationSec}]} (本桥录像, 新的在前; 桥删除后文件仍在, 归属按文件名前缀)。
+/// txFrames,startedAt,durationSec}]} (本桥录像, 新的在前; 桥删除后文件仍在, 归属按
+/// 文件名前缀; txFrames 有侧车为数字, 旧录像/录制中无侧车为 null —— 回放前警告
+/// "0 tx 帧 = 回放无输出" 的数据源)。
 async fn fleet_recordings(
     State(cs): State<ControlState>,
     AxumPath(id): AxumPath<String>,
@@ -1734,7 +1736,13 @@ async fn fleet_recordings_delete(
         Err(e) => return api::bad(e),
     };
     match std::fs::remove_file(&path) {
-        Ok(()) => api::ok(),
+        Ok(()) => {
+            // 侧车索引 (<file>.meta.json) 一并清理 (旧录像无侧车, 静默忽略)
+            let mut s = path.clone().into_os_string();
+            s.push(".meta.json");
+            let _ = std::fs::remove_file(PathBuf::from(s));
+            api::ok()
+        }
         Err(e) => api::bad(format!("删除录像失败: {e}")),
     }
 }
@@ -4206,6 +4214,151 @@ mod tests {
         .await;
         assert_eq!(code, 404);
         let _ = std::fs::remove_file(&bait);
+        t.shutdown().await;
+        let _ = std::fs::remove_dir_all(&recdir);
+    }
+
+    /// 侧车索引 txFrames (回放可见性配套): 录 3tx+2rx → stop 后列表 txFrames==3
+    /// (frames==5/bytes==14 不变); 侧车 <file>.meta.json 落盘且恰四字段;
+    /// 删录像连带删侧车。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recordings_list_txframes_from_sidecar() {
+        let t = spawn_mgr(None, None).await;
+        let recdir = temp_recdir("txf");
+        t.mgr.set_recordings_dir(recdir.clone());
+        fleet_create_ok(
+            t.addr,
+            r#"{"name":"tx计数桥","listen":"127.0.0.1:0","autoOpen":false}"#,
+        )
+        .await;
+        let b = t.mgr.get("b1").unwrap();
+        let (txq_tx, _txq_rx) = std_mpsc::channel::<Vec<u8>>();
+        b.ctx.set_tx(txq_tx);
+
+        let (code, resp) = http_req(t.addr, "POST", "/api/fleet/b1/record/start", None).await;
+        assert_eq!(code, 200, "{resp}");
+        // 2 帧 RX (bc_tx) + 3 帧 TX (send_to_port tee)
+        b.ctx.bc_tx.send(b"r1".to_vec()).unwrap();
+        b.ctx.bc_tx.send(b"r22".to_vec()).unwrap();
+        assert!(b.ctx.send_to_port(b"t1"));
+        assert!(b.ctx.send_to_port(b"t22"));
+        assert!(b.ctx.send_to_port(b"t333"));
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let (code, resp) = http_req(t.addr, "POST", "/api/fleet/b1/record/stop", None).await;
+        assert_eq!(code, 200, "{resp}");
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        let file = v["file"].as_str().unwrap().to_string();
+        assert_eq!(v["frames"], 5, "{resp}");
+        assert_eq!(
+            v["bytes"], 14,
+            "r1(2)+r22(3)+t1(2)+t22(3)+t333(4)=14: {resp}"
+        );
+
+        // 侧车落盘: <file>.meta.json 恰 {frames,bytes,txFrames,durationSec} 四字段
+        let meta_path = recdir.join(format!("{file}.meta.json"));
+        let meta_body = std::fs::read_to_string(&meta_path).expect("侧车应随 stop 落盘");
+        let mv: Value = serde_json::from_str(&meta_body).unwrap();
+        let mut keys: Vec<&str> = mv.as_object().unwrap().keys().map(|s| s.as_str()).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            ["bytes", "durationSec", "frames", "txFrames"],
+            "{meta_body}"
+        );
+        assert_eq!(mv["frames"], 5, "{meta_body}");
+        assert_eq!(mv["txFrames"], 3, "{meta_body}");
+        assert_eq!(mv["bytes"], 14, "{meta_body}");
+        assert!(mv["durationSec"].as_f64().unwrap() >= 0.0, "{meta_body}");
+
+        // 列表: txFrames==3 (前端 "0 tx 帧 = 回放无输出" 警告的数据源)
+        let (code, resp) = http_req(t.addr, "GET", "/api/fleet/b1/recordings", None).await;
+        assert_eq!(code, 200, "{resp}");
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        let list = v["recordings"].as_array().unwrap();
+        assert_eq!(list.len(), 1, "{resp}");
+        assert_eq!(list[0]["file"], file);
+        assert_eq!(list[0]["frames"], 5, "{resp}");
+        assert_eq!(list[0]["bytes"], 14, "{resp}");
+        assert_eq!(list[0]["txFrames"], 3, "{resp}");
+        assert!(list[0]["startedAt"].as_u64().unwrap() > 0, "{resp}");
+        assert!(list[0]["durationSec"].as_f64().unwrap() >= 0.0, "{resp}");
+
+        // 删录像连带删侧车 (不留孤儿索引)
+        let (code, resp) = http_req(
+            t.addr,
+            "POST",
+            "/api/fleet/b1/recordings/delete",
+            Some(&format!(r#"{{"file":"{file}"}}"#)),
+        )
+        .await;
+        assert_eq!(code, 200, "{resp}");
+        assert!(!recdir.join(&file).exists(), "录像已删");
+        assert!(!meta_path.exists(), "侧车应随录像一并删除");
+        t.shutdown().await;
+        let _ = std::fs::remove_dir_all(&recdir);
+    }
+
+    /// 旧录像无侧车 (及侧车损坏) → 列表回退逐行扫描, txFrames=null 不崩
+    /// (frames/bytes/durationSec 仍现算; 侧车文件本身不出现在列表里)。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn recordings_list_legacy_without_sidecar_txframes_null() {
+        let t = spawn_mgr(None, None).await;
+        let recdir = temp_recdir("legacy");
+        t.mgr.set_recordings_dir(recdir.clone());
+        fleet_create_ok(
+            t.addr,
+            r#"{"name":"旧录像桥","listen":"127.0.0.1:0","autoOpen":false}"#,
+        )
+        .await;
+        std::fs::create_dir_all(&recdir).unwrap();
+        // 旧录像 A: 无侧车 (2 rx + 1 tx)
+        std::fs::write(
+            recdir.join("b1-20200101-000000.jsonl"),
+            "{\"ts\":0,\"dir\":\"tx\",\"hex\":\"aa\"}\n\
+             {\"ts\":100,\"dir\":\"rx\",\"hex\":\"bb\"}\n\
+             {\"ts\":900,\"dir\":\"rx\",\"hex\":\"ccdd\"}\n",
+        )
+        .unwrap();
+        // 旧录像 B: 侧车存在但损坏 (非 JSON) —— 必须按无侧车回退, 不崩
+        std::fs::write(
+            recdir.join("b1-20200102-000000.jsonl"),
+            "{\"ts\":50,\"dir\":\"tx\",\"hex\":\"0102\"}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            recdir.join("b1-20200102-000000.jsonl.meta.json"),
+            "not json",
+        )
+        .unwrap();
+
+        let (code, resp) = http_req(t.addr, "GET", "/api/fleet/b1/recordings", None).await;
+        assert_eq!(code, 200, "{resp}");
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        let list = v["recordings"].as_array().unwrap();
+        // 恰两条 (侧车 .meta.json 不以 .jsonl 结尾, 不混入列表)
+        assert_eq!(list.len(), 2, "{resp}");
+        let find = |f: &str| {
+            list.iter()
+                .find(|e| e["file"] == f)
+                .unwrap_or_else(|| panic!("缺 {f}: {resp}"))
+                .clone()
+        };
+        let a = find("b1-20200101-000000.jsonl");
+        assert_eq!(a["frames"], 3, "{a}");
+        assert_eq!(a["bytes"], 4, "{a}");
+        assert_eq!(a["durationSec"], 0.9, "{a}");
+        assert!(a["startedAt"].as_u64().unwrap() > 0, "{a}");
+        assert!(
+            a["txFrames"].is_null(),
+            "无侧车 → txFrames=null (前端容错): {a}"
+        );
+        let c = find("b1-20200102-000000.jsonl");
+        assert_eq!(c["frames"], 1, "{c}");
+        assert_eq!(c["bytes"], 2, "{c}");
+        assert!(
+            c["txFrames"].is_null(),
+            "损坏侧车 → 回退扫描 txFrames=null: {c}"
+        );
         t.shutdown().await;
         let _ = std::fs::remove_dir_all(&recdir);
     }

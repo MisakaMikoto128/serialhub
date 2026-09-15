@@ -331,6 +331,9 @@ dialog::backdrop{background:rgba(28,38,48,.4)}
 .rec-live .dot{background:var(--err)}
 .rec-replay .dot{background:var(--tx)}
 .rec-live b,.rec-replay b{font-family:var(--mono)}
+.rec-replay.done{color:var(--ok-ink);background:var(--ok-bg);border-color:var(--ok)}
+.rec-replay.done .dot{animation:none;background:var(--ok)}
+.rec-replay.done #btnReplayStop{display:none} /* 已完成: 停止钮无意义, 收掉 */
 #btnReplayStop{height:var(--ctl-h-sm);flex:none;margin-left:auto} /* 回放状态行内停止钮: 紧凑档 (UI-1) */
 .rec-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
   padding:8px 0;border-bottom:1px solid var(--border);margin-bottom:8px}
@@ -346,6 +349,7 @@ dialog::backdrop{background:rgba(28,38,48,.4)}
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rec-row .fmeta{font-size:12px;color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
 .rec-row button{height:var(--ctl-h-sm);flex:none} /* 行内小操作: 紧凑档 (UI-1) */
+.rec-tx0{font-size:12px;color:var(--warn-ink);white-space:nowrap;flex:none} /* tx=0 行内提示: 回放无输出 */
 .rec-empty{font-size:12px;color:var(--faint);padding:12px 0}
 
 /* 旁路转发 (Sprint13 B2 / FR-20): 抽屉状态行 + 卡片状态微标
@@ -1744,14 +1748,27 @@ function syncDrawerLive() {
   /* B1-FIX (XTEST P1-2): 回放状态以后端为准 (ADR-24⑥ b.replay) ——
      有则收编 (含 UI 重开/后端代启的场景), 无则收点; 提交在途给 2s 宽限防竞态 */
   const cur = replaying.get(b.id);
-  if (b.replay) {
-    replaying.set(b.id, { file: b.replay.file || (cur && cur.file) || "", speed: Number(b.replay.speed) || 1,
+  if (cur && cur.doneAt) {
+    /* 「回放完成」2s 展示期内: 不再被后端态收编/收点, 到点由 reapReplayDone 收 */
+  } else if (b.replay) {
+    const rf = b.replay.file || (cur && cur.file) || "";
+    const rs = Number(b.replay.speed) || 1;
+    replaying.set(b.id, { file: rf, speed: rs,
       loop: !!b.replay.loop, frames: b.replay.frames, bytes: b.replay.bytes,
-      startTs: cur ? cur.startTs : Date.now(), durSec: NaN, fromBackend: true });
+      startTs: cur ? cur.startTs : Date.now(),
+      durSec: (cur && Number.isFinite(cur.durSec)) ? cur.durSec : estReplaySec(rf, rs), fromBackend: true });
     syncReplayLine();
   } else if (cur && (cur.fromBackend || Date.now() - cur.startTs > 2000)) {
-    replaying.delete(b.id);
-    syncReplayLine();
+    /* 后端收点: 自然结束 (估时已知且非用户停/非循环) → 转「回放完成」2s 消散; 其余直接收 */
+    if (!cur.stopped && !cur.loop && Number.isFinite(cur.durSec) &&
+        (Date.now() - cur.startTs) / 1000 >= cur.durSec - 1.5) {
+      cur.doneAt = Date.now();
+      syncReplayLine();
+      setTimeout(reapReplayDone, 2000);
+    } else {
+      replaying.delete(b.id);
+      syncReplayLine();
+    }
   }
   $("drTitle").textContent = b.name || b.id;
   setBadge($("drBadge"), $("drPhase"), b.phase);
@@ -1836,7 +1853,11 @@ function esc(s) {
    - 录制中: 本地跟踪 (startTs 起表计时); 条数/字节从 recordings 列表回读 ——
      后端若对录制中的文件即时回填即实时显示, 未回填则显示「停止后统计」不谎报 0;
    - 回放中: 状态以后端 b.replay 字段为准 (XTEST P1-2, ADR-24⑥) —— 轮询收编/收点,
-     UI 立即亮态只是先行反馈; 「停止回放」钮走 /replay/stop, 后端停了 UI 跟着退态。 */
+     UI 立即亮态只是先行反馈; 「停止回放」钮走 /replay/stop, 后端停了 UI 跟着退态。
+   - 回放语义 (用户反馈「回放看不到结果」后裁定): 回放 = 把录像里 tx 方向的帧按
+     原始时序重发到串口, 结果在设备侧, 终端不显示回放内容 —— 状态行写明这点并给
+     预计时长 (录像 durationSec ÷ 速度, recordings 列表现成); 到点转「回放完成」
+     2s 消散 (循环/用户停止不显示); 回放钮 tooltip 写明只重发「发出」的数据。 */
 const recActive = new Map();    /* id → {file,startTs,frames,bytes} */
 const replaying = new Map();    /* id → {file,speed,loop,startTs,fromBackend} — 状态以后端 b.replay 为准 (XTEST P1-2) */
 let recCache = [];              /* 当前抽屉桥的录像列表缓存 */
@@ -1867,7 +1888,7 @@ function syncRecUI() {
   if (window.__sh) { const rp = drawerId && replaying.get(drawerId); window.__sh.rec = { /* QA 观测口 */
     recording: on,
     file: on ? recActive.get(drawerId).file : null,
-    replaying: rp ? { file: rp.file, speed: rp.speed, loop: rp.loop } : null,
+    replaying: rp ? { file: rp.file, speed: rp.speed, loop: rp.loop, estSec: rp.durSec, done: !!rp.doneAt } : null,
   } };
 }
 function updateRecLiveText() {
@@ -1878,18 +1899,43 @@ function updateRecLiveText() {
   $("recLiveText").innerHTML = "录制中 · 已录 <b>" + esc(fmtDur((Date.now() - a.startTs) / 1000)) + "</b>" +
     (fr ? " · <b>" + esc(fr) + "</b>" : "") + (by ? " · <b>" + esc(by) + "</b>" : " · 条数明细在停止后统计");
 }
+function estReplaySec(file, speed) { /* 预计回放时长 = 录像时长 ÷ 速度 (时长在 recordings 列表现成) */
+  const rec = recCache.find((x) => x && x.file === file);
+  const d = Number(rec && rec.durationSec);
+  const sp = Number(speed);
+  return Number.isFinite(d) && d > 0 && Number.isFinite(sp) && sp > 0 ? d / sp : NaN;
+}
 function updateReplayText() {
   const r = drawerId && replaying.get(drawerId);
   if (!r) return;
+  if (r.doneAt) { /* 回放完成 (2s 后由 reapReplayDone 收点消散) */
+    $("recReplayText").innerHTML = "<b>回放完成</b> — 录制时发出的数据已按原时序发给串口";
+    return;
+  }
+  const est = Number.isFinite(r.durSec) ? " · 预计 <b>" + esc(fmtDur(r.durSec)) + "</b>" : "";
   const prog = (r.fromBackend && Number.isFinite(Number(r.bytes))) ? " · 已发 <b>" + esc(fmtBytes(r.bytes)) + "</b>" : "";
-  $("recReplayText").innerHTML = "正在回放 <b>" + esc(r.file) + "</b> · " + esc(String(r.speed)) +
-    " 倍速 · 数据发给这座桥的串口" + (r.loop ? " · 循环开着, 点「停止回放」结束" : "") + prog;
+  $("recReplayText").innerHTML = "回放中 <b>" + esc(r.file) + "</b> · " + esc(String(r.speed)) + " 倍速" + est +
+    " — 正把录制时发出的数据重发到串口 (结果在设备侧; 终端不显示回放内容)" +
+    (r.loop ? " · 循环开着, 点「停止回放」结束" : "") + prog;
 }
 function syncReplayLine() { /* 回放状态行单点刷新 (轮询收编/收点也走这里, 不整列重绘) */
   if (!drawerId) return;
   const rp = replaying.get(drawerId);
   $("recReplay").classList.toggle("show", !!rp);
+  $("recReplay").classList.toggle("done", !!(rp && rp.doneAt));
   if (rp) updateReplayText();
+}
+function checkReplayDone() { /* 2) 预计时长到点 → 状态行转「回放完成」(2s 后消散); 循环/用户停止不显示 */
+  const r = drawerId && replaying.get(drawerId);
+  if (!r || r.doneAt || r.stopped || r.loop || !Number.isFinite(r.durSec)) return;
+  if ((Date.now() - r.startTs) / 1000 < r.durSec) return;
+  r.doneAt = Date.now();
+  syncReplayLine();
+  setTimeout(reapReplayDone, 2000);
+}
+function reapReplayDone() { /* 完成提示展示满 2s 后收点 (仅当仍是这条完成态) */
+  const r = drawerId && replaying.get(drawerId);
+  if (r && r.doneAt && Date.now() - r.doneAt >= 2000) { replaying.delete(drawerId); syncReplayLine(); }
 }
 function renderRecList() {
   if (!drawerId) return;
@@ -1912,19 +1958,33 @@ function renderRecList() {
     nm.className = "fname";
     nm.textContent = (r && r.file) || "(未命名)";
     nm.title = (r && r.file) || "";
+    /* txFrames (后端侧车提供; 旧录像 null): 回放可见性 —— 0 tx 帧 = 回放无输出 (§16 缺口已补) */
+    const t = r && r.txFrames; /* null/undefined 都走「tx ?」兜底 (Number(null)===0 的坑) */
+    const tx = (t == null || !Number.isFinite(Number(t))) ? null : Number(t);
     const meta = document.createElement("span");
     meta.className = "fmeta";
     meta.textContent = (r && r.durationSec != null ? fmtDur(r.durationSec) : "时长 —") +
+      " · " + (tx == null ? "tx ?" : "tx " + fmtBytes(tx) + " 帧") +
       " · " + fmtBytes(r && r.bytes) + " 字节";
     const play = document.createElement("button");
     play.type = "button"; play.textContent = "回放";
-    play.title = "按上面选的速度把这段录像原样发给串口";
+    play.title = "回放重发的是录制期间这座桥「发出」的数据 (按上面选的速度); 只录制过设备上报的数据则回放无输出";
+    if (tx === 0) { /* 无发出数据: 回放必然无输出, 置灰 + 行内说明 */
+      play.disabled = true;
+      play.title = "无发出数据 (tx=0), 回放无输出 — 只录制过设备上报的数据; 要回放请录一段有发出的";
+    }
     play.addEventListener("click", () => startReplay(drawerId, r.file));
     const del = document.createElement("button");
     del.type = "button"; del.className = "danger"; del.textContent = "删除";
     del.title = "删掉这个录像文件 (桥删了录像也还在这里)";
     del.addEventListener("click", () => armDelRec(del, r.file));
-    row.append(nm, meta, play, del);
+    if (tx === 0) {
+      const hint = document.createElement("span");
+      hint.className = "rec-tx0";
+      hint.textContent = "无发出数据 (tx=0), 回放无输出";
+      row.append(nm, meta, hint);
+    } else row.append(nm, meta);
+    row.append(play, del);
     list.appendChild(row);
   }
 }
@@ -1985,9 +2045,12 @@ async function startReplay(id, file) {
   const loop = $("recLoop").checked;
   try {
     await api("/api/fleet/" + encodeURIComponent(id) + "/replay", { file, speed, loop });
-    replaying.set(id, { file, speed, loop, startTs: Date.now(), durSec: NaN }); /* 立即亮态; 后端 b.replay 随轮询接管 */
+    /* 立即亮态 + 预计时长 (录像时长÷速度, recordings 列表现成); 后端 b.replay 随轮询接管 */
+    replaying.set(id, { file, speed, loop, startTs: Date.now(), durSec: estReplaySec(file, speed) });
     if (drawerId === id) syncRecUI();
-    notice("回放开始: " + file + " (" + speed + " 倍速" + (loop ? ", 循环" : "") + ") — 数据会发到这座桥的串口", "ok");
+    notice("回放开始: " + file + " (" + speed + " 倍速" +
+      (Number.isFinite(estReplaySec(file, speed)) ? ", 预计 " + fmtDur(estReplaySec(file, speed)) : "") +
+      (loop ? ", 循环" : "") + ") — 正把录制时发出的数据重发到串口 (结果在设备侧)", "ok");
   } catch (e) {
     const msg = String(e.message || "");
     const hint = msg.includes("串口未打开") ? " — 桥要先「启动」着, 再点一次「回放」"
@@ -1999,6 +2062,8 @@ async function startReplay(id, file) {
 async function stopReplay() { /* B1-FIX (XTEST P1-2): 循环回放的 UI 停止入口 (后端 replay/stop, ADR-24⑥) */
   if (!drawerId) return;
   const btn = $("btnReplayStop");
+  const r = replaying.get(drawerId);
+  if (r) r.stopped = true; /* 用户主动停: 后端收点后不转「回放完成」 */
   btn.disabled = true;
   try {
     await api("/api/fleet/" + encodeURIComponent(drawerId) + "/replay/stop", {});
@@ -2038,7 +2103,7 @@ function recTick() { /* 1s 节拍: 计时文字走这里, 不整列重绘 */
       refreshRecordings(); /* 录制中: 兜住后端即时回填帧数/字节的路径 */
     }
   }
-  if (replaying.has(drawerId)) updateReplayText();
+  if (replaying.has(drawerId)) { checkReplayDone(); updateReplayText(); }
 }
 
 /* ================= 侦听终端 (FR-10e: 只读旁看串口流) =================

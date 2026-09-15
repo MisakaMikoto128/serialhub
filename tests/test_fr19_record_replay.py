@@ -96,6 +96,9 @@ def _ws_send_gapped(ws_url: str, frames, gap_s: float, hold: threading.Event):
 
 
 def _read_jsonl(names) -> list:
+    # v2.0.1 起录制停止会生成侧车 <name>.meta.json (txFrames 等元数据),
+    # 它不是录像 —— 只读 .jsonl 本体, 侧车键由 recordings 列表断言覆盖。
+    names = [n for n in names if n.endswith(".jsonl")]
     lines = []
     for name in sorted(names):
         text = (recordings_dir() / name).read_text("utf-8", "replace")
