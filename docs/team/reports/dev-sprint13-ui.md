@@ -189,3 +189,49 @@
   `forward-align-after-1440` (审计标准宽) / `forward-align-after-720` (窄屏) /
   `forward-align-compare` (前|后并排)。
 - 出包提醒: 已 `cargo build --release` 让改动进壳验证过; 桌面壳需随下次发版重打。
+
+---
+
+# 节奏重构 — cf 表单 every-layout gap 法 (dev-ui 301, 2026-09-15)
+
+- 变更文件: **仅 `ui/index.html`** (1 块 CSS + 1 处内联样式, 未碰结构/文案/JS/src/tests) · 未 commit
+- 依据: 用户三轮手调抽屉间距后问「有没有最优编码方法」— 病根: cf 设置抽屉是垂直堆栈,
+  但每个子元素 (.field/.send-hint/.fwd-stat/.lock-hint/.ferr/.equiv) 各自带垂直 margin,
+  新元素加进来就要手调, 间距永远在漂。取 every-layout 标准做法: 间距只由容器持有。
+
+## 13. 改法 (gap 节奏法)
+
+1. **容器持有节奏**: `#pan-cfg:not([hidden]){display:flex;flex-direction:column;gap:8px}`。
+   `:not([hidden])` 是必须的守卫 —— 否则 author `display:flex` 会压掉 UA 的
+   `[hidden]{display:none}` 把隐藏页签顶出来; align-items 默认 stretch,
+   .field/.ctl/.equiv (details) 全宽行为不变。
+2. **直接子元素垂直 margin 全删** (`#pan-cfg>` 作用域, 别处表单不受影响; 水平不动:
+   .ferr 左 80px 与 720px 媒查 68px 缩进保留)。删掉的旧 margin: h3 mb 12 / .field mb 8 /
+   .param-row mb 8 / .send-hint mt 8 / .ferr -4 0 8 / .form-err(#cfErr) 8 0 /
+   .lock-hint 8 0 / .fwd-stat 16 0 14 / .equiv mt 12 / `.actions` 内联 mt 12。
+3. **唯一显式例外**: `#pan-cfg>.fwd-field{margin-top:3px}` —— 用户校准的强调间距:
+   flex 下 margin 不塌陷、与 gap 叠加, 8+3 = 视觉 11px, 与重构前塌陷值 (旧
+   `margin-top:11px`) 一致, 旁路转发上方「略大」的观感原样保留 (旧 `.fwd-field +
+   .send-hint{margin-bottom:7px}` 实测对相邻间距无视觉贡献, 随重构删除)。
+4. **基线实测 (重构前, Playwright getBoundingClientRect, 1280×900, 运行态)**:
+   h3→首行 12 / field↔field 8 / **send-hint→下一 field 0px** (hint 只有 margin-top,
+   下行 field 无 margin-top —— 旧节奏漂移实锤, 11/7px 手调即是在补这个洞) /
+   hint→fwd-field 11 / fwd-stat 上 16 下 14 / lock-hint→equiv 12 / equiv→actions 12。
+   重构后: 全部收敛 **8px 均一 + fwd-field 上方 11px**, 以后加行零手调。
+
+## 14. 自验 (mock+Playwright 18/18 PASS + 像素审计双主题全绿)
+
+- **间距断言** (output/sprint13-ui-mock/rhythm_test.cjs, PHASE=after): 9 个场景 ——
+  运行基线 / 停止解锁 (lock-hint 隐) / 红字 .ferr 显 / 红字隐 (无残留) / 转发关
+  (fwd-stat 隐) / 启动回锁 (lock-hint 回现) / .equiv 展开 / .equiv 折叠 / 录像列表
+  刷新+回设置页签 —— 相邻可见间距全 8±0.5 (fwd 上方 11±0.5); 直接子元素 computed
+  垂直 margin 全 0 (例外 3px); 隐藏元素 (display:none) 不产生 gap, 显隐切换无跳变。
+- **双主题 × 视口**: light/dark × 1280×900 与 720×900 断言同过, 720 scrollWidth=720
+  无横向溢出; 预期外页面 JS 异常 0。
+- **UI-1 像素审计** (tools/ui_pixel_audit.js): 默认轮 168 控件 × 7 轮 +
+  AUDIT_THEME=dark 全深色轮 173 控件 × 7 轮, 高度 ∈{28,34}±0.5、
+  圆角 = 主题 --ctl-radius±0.5, 违例 0。
+- `cargo build --release` 已过, 重构后 UI 已嵌壳验证 (桌面壳仍需随发版重打)。
+- 截图 (`docs/team/reports/dev-sprint13-ui/`): rhythm-before-1280 (基线, 间距表见 §13.4) /
+  rhythm-after-1280 (同视口对比) / rhythm-after-ferr (红字态) / rhythm-after-rec
+  (录像列表) / rhythm-after-dark-1280 / rhythm-after-dark-720 / rhythm-after-720。

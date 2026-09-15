@@ -352,9 +352,16 @@ dialog::backdrop{background:rgba(28,38,48,.4)}
    (未配置不显示; 已配置 已连接=绿 / 未连接=琥珀, 颜色走状态令牌)
    状态行与同抽屉 hint/lock-hint 同基准: 全宽落 label 左缘, 行距走表单 8px 节奏
    (v2.0.1 对齐修复轮: 旧 80px 缩进 + -2px 负边距是全表单唯一出格的文本行) */
-.fwd-field{margin-top:11px}
-.fwd-field + .send-hint{margin-bottom:7px}
-.fwd-stat{display:none;align-items:center;gap:6px;margin:16px 0 14px;padding-top:10px;border-top:1px dashed var(--border);font-size:12px;
+/* 节奏重构 (every-layout gap 法, 2026-09-15): cf 表单的垂直节奏只由 #pan-cfg 一个容器持有
+   (flex column + gap:8px; align-items 默认 stretch, field/ctl/details 全宽不变),
+   直接子元素一律不带垂直 margin —— 以后加行零手调, 间距不再漂;
+   隐藏元素 (display:none) 不产生 gap: .ferr/.fwd-stat/.lock-hint 显隐切换无残留无跳变。
+   :not([hidden]) 守卫 —— 否则 author display:flex 会压掉 UA 的 [hidden]{display:none} 顶出隐藏页签 */
+#pan-cfg:not([hidden]){display:flex;flex-direction:column;gap:8px}
+#pan-cfg>h3,#pan-cfg>.field,#pan-cfg>.param-row,#pan-cfg>.send-hint,#pan-cfg>.ferr,
+#pan-cfg>.form-err,#pan-cfg>.lock-hint,#pan-cfg>.fwd-stat,#pan-cfg>.equiv{margin-top:0;margin-bottom:0}
+#pan-cfg>.fwd-field{margin-top:3px} /* 用户校准的强调间距, 唯一例外: 叠在容器 gap 8px 之上 = 视觉 11px (与重构前塌陷值一致) */
+.fwd-stat{display:none;align-items:center;gap:6px;padding-top:10px;border-top:1px dashed var(--border);font-size:12px;
   color:var(--muted);word-break:break-all}
 .fwd-stat.show{display:flex}
 .fwd-stat .fdot{width:8px;height:8px;border-radius:50%;flex:none}
@@ -687,7 +694,7 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
           <button id="btnCfCopyCmd" type="button" class="copy-ghost" title="复制" aria-label="复制命令行写法"></button></div>
         <div class="send-hint">在命令行里跑这条, 效果和这座桥完全一样; 不想弹窗口就加 --headless</div>
       </details>
-      <div class="actions" style="margin-top:12px;display:flex;align-items:center;gap:8px">
+      <div class="actions" style="display:flex;align-items:center;gap:8px">
         <button id="btnCfSave" type="button" class="primary" title="保存这座桥的设置">保 存</button>
       </div>
     </section>
