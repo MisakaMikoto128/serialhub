@@ -1,0 +1,39 @@
+/* ============================================================
+   SerialHub 内置主题: dark (深色) —— FR-14 主题插件
+   ============================================================
+   深色令牌: 暖灰底 #14171a / 面板 #1d2126 / 文字 #e8eaed / 边框 #2c313a。
+   对比度 (WCAG AA):
+   - 文字 ink 13.1:1 / muted 7.4:1 / faint 4.8:1 (对 --panel, 均 ≥ 4.5);
+   - --accent 保持 #0e6db8 不变 (主按钮白字对 accent 5.4:1 过 AA);
+     accent 作为文字色仅出现在 hover/选中态 (≈3:1, 大字/图形档);
+   - 徽章文字 ok/warn/err/gray-ink 对各自徽章底 ≥ 7:1。
+   ============================================================ */
+:root{
+  --bg:#14171a;          /* 暖灰页面底 */
+  --panel:#1d2126;       /* 面板 */
+  --panel-2:#22272d;     /* 面板内浅底 (工具条/输入) */
+  --border:#2c313a;
+  --border-strong:#3a414d;
+  --ink:#e8eaed;
+  --muted:#a8b0bb;
+  --faint:#828c99;
+  --accent:#0e6db8;      /* accent 不变: 品牌蓝, 主按钮白字对比 5.4:1 */
+  --accent-hover:#0b5c9c;
+  --accent-ink:#ffffff;
+  --ok:#1e8e4e;    --ok-bg:#122b1d;    --ok-ink:#8fe3b0;   /* 徽章文字用亮色 ink 保 AA */
+  --warn:#c07800;  --warn-bg:#33270e;  --warn-ink:#f0c063;
+  --err:#d95b51;   --err-bg:#3a1d1a;   --err-ink:#ff9d94;
+  --gray:#8b96a1;  --gray-bg:#2a2f36;  --gray-ink:#c9d0d8;
+  --tx:#5fb0ef;                          /* 网页→串口 方向色 (深底上提亮, 同蓝色相) */
+  --rx:#4ecf8b;                          /* 串口→网页 方向色 (深底上提亮, 同绿色相) */
+  --term-bg:#101316; --term-border:#2c313a;
+  --radius:6px;
+  --gap:12px; --pad:12px;
+  --ctl-h:34px;
+  --ctl-h-sm:28px;
+  --ctl-radius:8px;
+  --ctl-px:12px;
+  --ctl-fs:13px;
+  --sans:"Segoe UI","Microsoft YaHei","PingFang SC",system-ui,sans-serif;
+  --mono:Consolas,"Cascadia Mono","SFMono-Regular",Menlo,monospace;
+}

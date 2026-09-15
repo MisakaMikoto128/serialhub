@@ -13,7 +13,7 @@
   --border-strong:#b7c1cb;
   --ink:#1c2630;
   --muted:#5f6b76;
-  --faint:#8b96a1;
+  --faint:#65717c;       /* XTEST P1-3: 3.01→4.97:1 (panel) / 4.69:1 (panel-2), AA 达标 */
   --accent:#0e6db8;
   --accent-hover:#0b5c9c;
   --accent-ink:#ffffff;

@@ -1,0 +1,17 @@
+C:\Users\liuyu\Desktop\WorkPlace\serialhub\target-f2\release\deps\thiserror_impl-39462af6ba44a692.d: C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\lib.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\ast.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\attr.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\expand.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\fallback.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\fmt.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\generics.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\prop.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\scan_expr.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\unraw.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\valid.rs
+
+C:\Users\liuyu\Desktop\WorkPlace\serialhub\target-f2\release\deps\thiserror_impl-39462af6ba44a692.dll: C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\lib.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\ast.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\attr.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\expand.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\fallback.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\fmt.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\generics.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\prop.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\scan_expr.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\unraw.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\valid.rs
+
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\lib.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\ast.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\attr.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\expand.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\fallback.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\fmt.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\generics.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\prop.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\scan_expr.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\unraw.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\thiserror-impl-2.0.20\src\valid.rs:
+
+# env-dep:CARGO_PKG_VERSION_PATCH=20

@@ -1,0 +1,13 @@
+C:\Users\liuyu\Desktop\WorkPlace\serialhub\target-f2\release\deps\url-6bba97bc31d391d6.d: C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\lib.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\host.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\origin.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\parser.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\path_segments.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\slicing.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\quirks.rs
+
+C:\Users\liuyu\Desktop\WorkPlace\serialhub\target-f2\release\deps\liburl-6bba97bc31d391d6.rlib: C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\lib.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\host.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\origin.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\parser.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\path_segments.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\slicing.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\quirks.rs
+
+C:\Users\liuyu\Desktop\WorkPlace\serialhub\target-f2\release\deps\liburl-6bba97bc31d391d6.rmeta: C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\lib.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\host.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\origin.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\parser.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\path_segments.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\slicing.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\quirks.rs
+
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\lib.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\host.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\origin.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\parser.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\path_segments.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\slicing.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\url-2.5.8\src\quirks.rs:

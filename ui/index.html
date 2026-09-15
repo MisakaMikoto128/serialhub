@@ -19,7 +19,7 @@
   --border-strong:#b7c1cb;
   --ink:#1c2630;
   --muted:#5f6b76;
-  --faint:#8b96a1;
+  --faint:#65717c;       /* XTEST P1-3: 3.01→4.97:1 (panel) / 4.69:1 (panel-2), AA 达标 */
   --accent:#0e6db8;
   --accent-hover:#0b5c9c;
   --accent-ink:#ffffff;
@@ -182,7 +182,7 @@ button.primary{background:var(--accent);border-color:var(--accent);color:var(--a
 button.primary:hover:not(:disabled){background:var(--accent-hover);color:var(--accent-ink)}
 button.danger{border-color:var(--err);color:var(--err)}
 button.danger:hover:not(:disabled){background:var(--err-bg)}
-button.danger.armed{background:var(--err);border-color:var(--err);color:var(--err-bg)} /* 同 quit-btn.armed: 配对反色, 无硬编码 */
+button.danger.armed,button.danger.armed:hover:not(:disabled){background:var(--err);border-color:var(--err);color:var(--err-bg)} /* XTEST P1-1: 确认态反色在悬停下保持可读 (:hover 特异性不得压过 armed) */
 .field{display:flex;align-items:center;gap:8px;margin-bottom:8px}
 .field>label{width:72px;flex:none;color:var(--muted);font-size:12px;white-space:nowrap}
 .field .ctl{flex:1;display:flex;align-items:center;gap:8px;min-width:0}
@@ -331,6 +331,7 @@ dialog::backdrop{background:rgba(28,38,48,.4)}
 .rec-live .dot{background:var(--err)}
 .rec-replay .dot{background:var(--tx)}
 .rec-live b,.rec-replay b{font-family:var(--mono)}
+#btnReplayStop{height:var(--ctl-h-sm);flex:none;margin-left:auto} /* 回放状态行内停止钮: 紧凑档 (UI-1) */
 .rec-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
   padding:8px 0;border-bottom:1px solid var(--border);margin-bottom:8px}
 .rec-tools .spacer{flex:1}
@@ -524,7 +525,7 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
         title="管理台自己的网址, 形如 127.0.0.1:8080; 改好后本页自动跳到新网址" /></div>
     </div>
     <div class="ferr" id="setErrAddr" hidden></div>
-    <div class="send-hint">改的是管理台自己的网址: 串口不受影响, 本页将自动跳到新网址, 重启后仍用新网址。</div>
+    <div class="send-hint">改的是管理台自己的网址: 串口不受影响, 本页将自动跳到新网址, 重开程序后仍用新网址。</div>
     <div class="field">
       <label>配置备份</label>
       <div class="ctl">
@@ -670,10 +671,10 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
       <div class="field">
         <label for="cfForward">旁路转发</label>
         <div class="ctl"><input id="cfForward" type="text" placeholder="留空 = 不转发; 例: 192.168.1.20:9000"
-          title="旁路转发 (TCP): 把串口收到的数据同步转发给这个地址" /></div>
+          title="旁路转发: 把串口收到的数据同步转发给这个地址" /></div>
       </div>
       <div class="ferr" id="cfErrForward" hidden></div>
-      <div class="send-hint">把串口收到的数据同步转发给这个 TCP 地址 (只出不进, 自动重连); 留空 = 关闭转发</div>
+      <div class="send-hint">把串口收到的数据同步转发给这个网络地址 (只出不进, 对方断了会自动接回); 留空 = 关闭转发</div>
       <div id="cfFwdStat" class="fwd-stat" role="status"></div>
       <div id="cfLockHint" class="lock-hint"></div>
       <div id="cfErr" class="form-err"></div>
@@ -714,7 +715,7 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
         <span class="rec-hint" id="recHint">录制会原样存下这座桥收发的每个字节; 以后可按选定速度回放给串口</span>
       </div>
       <div id="recLive" class="rec-live" role="status"><span class="dot" aria-hidden="true"></span><span id="recLiveText"></span></div>
-      <div id="recReplay" class="rec-replay" role="status"><span class="dot" aria-hidden="true"></span><span id="recReplayText"></span></div>
+      <div id="recReplay" class="rec-replay" role="status"><span class="dot" aria-hidden="true"></span><span id="recReplayText"></span><button id="btnReplayStop" type="button" title="停止回放, 不再发给串口">停止回放</button></div>
       <div class="rec-tools">
         <span class="count" id="recCount">录像 (0)</span>
         <span class="spacer"></span>
@@ -732,7 +733,7 @@ footer{max-width:1200px;margin:0 auto;padding:0 var(--gap) 16px;color:var(--fain
           <label for="recLoop">循环</label>
         </span>
       </div>
-      <div id="recList" class="rec-list"></div>
+      <div id="recList" class="rec-list" tabindex="-1"></div>
     </section>
 
     <section id="pan-stats" role="tabpanel" aria-labelledby="tb-stats" class="dr-sec" hidden>
@@ -1061,7 +1062,6 @@ function syncCards() {
       recoveries.delete(id); wasRetry.delete(id);
       recActive.delete(id); /* 桥没了: 录制/回放的本地跟踪一并清掉 */
       replaying.delete(id);
-      clearTimeout(replayTimers.get(id)); replayTimers.delete(id);
       if (drawerId === id) { closeDrawer(); notice("这座桥已被删除", "err"); }
     }
   }
@@ -1679,9 +1679,8 @@ function openDrawer(id, opener) {
 }
 function closeDrawer() {
   drawer.hidden = true; mask.hidden = true;
-  /* 回放状态只在抽屉里展示; 关抽屉即收 (录制是长活的, recActive 保留计时) */
+  /* 回放状态只在抽屉里展示; 关抽屉即收本地态 (后端在放的, 重开抽屉会随 b.replay 重新亮起) */
   replaying.delete(drawerId);
-  clearTimeout(replayTimers.get(drawerId)); replayTimers.delete(drawerId);
   drawerId = null;
   disconnectTap();
   if (lastFocus && lastFocus.isConnected) lastFocus.focus();
@@ -1732,6 +1731,18 @@ function syncDrawerLive() {
   if (!drawerId) return;
   const b = bridges.find((x) => x.id === drawerId);
   if (!b) return;
+  /* B1-FIX (XTEST P1-2): 回放状态以后端为准 (ADR-24⑥ b.replay) ——
+     有则收编 (含 UI 重开/后端代启的场景), 无则收点; 提交在途给 2s 宽限防竞态 */
+  const cur = replaying.get(b.id);
+  if (b.replay) {
+    replaying.set(b.id, { file: b.replay.file || (cur && cur.file) || "", speed: Number(b.replay.speed) || 1,
+      loop: !!b.replay.loop, frames: b.replay.frames, bytes: b.replay.bytes,
+      startTs: cur ? cur.startTs : Date.now(), durSec: NaN, fromBackend: true });
+    syncReplayLine();
+  } else if (cur && (cur.fromBackend || Date.now() - cur.startTs > 2000)) {
+    replaying.delete(b.id);
+    syncReplayLine();
+  }
   $("drTitle").textContent = b.name || b.id;
   setBadge($("drBadge"), $("drPhase"), b.phase);
   /* F3: 抽屉头部的停止/启动钮与卡片同源同文案 (UI-0), 随轮询实时同步 */
@@ -1812,13 +1823,12 @@ function esc(s) {
 
 /* ================= 录制与回放 (FR-19 / Sprint13 B1) =================
    录制/回放本体在后端 (tap 通道 tee 落盘 JSONL / 按原始时序写回串口 TX), UI 管状态:
-   - 录制中: 本地跟踪 (startTs 起表计时); 帧数/字节从 recordings 列表回读 ——
+   - 录制中: 本地跟踪 (startTs 起表计时); 条数/字节从 recordings 列表回读 ——
      后端若对录制中的文件即时回填即实时显示, 未回填则显示「停止后统计」不谎报 0;
-   - 回放中: 发起成功即亮进行中状态, 非循环按 录像时长/倍速 自动收点;
-     循环回放没有已知终点, 状态保持到关抽屉 (契约缺口见报告 SPEC-Q1/Q2)。 */
+   - 回放中: 状态以后端 b.replay 字段为准 (XTEST P1-2, ADR-24⑥) —— 轮询收编/收点,
+     UI 立即亮态只是先行反馈; 「停止回放」钮走 /replay/stop, 后端停了 UI 跟着退态。 */
 const recActive = new Map();    /* id → {file,startTs,frames,bytes} */
-const replaying = new Map();    /* id → {file,speed,loop,startTs,durSec} */
-const replayTimers = new Map(); /* id → 回放自动收点定时器 */
+const replaying = new Map();    /* id → {file,speed,loop,startTs,fromBackend} — 状态以后端 b.replay 为准 (XTEST P1-2) */
 let recCache = [];              /* 当前抽屉桥的录像列表缓存 */
 let recListErr = null;          /* 列表取不到时的原话 (给可行动话术用) */
 let recBusy = false;            /* 开始/停止录制在途: 防连点 */
@@ -1842,29 +1852,34 @@ function syncRecUI() {
     : "录制会原样存下这座桥收发的每个字节; 以后可按选定速度回放给串口";
   $("recLive").classList.toggle("show", on);
   if (on) updateRecLiveText();
-  const rp = replaying.get(drawerId);
-  $("recReplay").classList.toggle("show", !!rp);
-  if (rp) updateReplayText();
+  syncReplayLine();
   renderRecList();
-  if (window.__sh) window.__sh.rec = { /* QA 观测口 */
+  if (window.__sh) { const rp = drawerId && replaying.get(drawerId); window.__sh.rec = { /* QA 观测口 */
     recording: on,
     file: on ? recActive.get(drawerId).file : null,
     replaying: rp ? { file: rp.file, speed: rp.speed, loop: rp.loop } : null,
-  };
+  } };
 }
 function updateRecLiveText() {
   const a = drawerId && recActive.get(drawerId);
   if (!a) return;
-  const fr = Number.isFinite(Number(a.frames)) ? fmtBytes(a.frames) + " 帧" : null;
+  const fr = Number.isFinite(Number(a.frames)) ? fmtBytes(a.frames) + " 条" : null;
   const by = Number.isFinite(Number(a.bytes)) ? fmtBytes(a.bytes) + " 字节" : null;
   $("recLiveText").innerHTML = "录制中 · 已录 <b>" + esc(fmtDur((Date.now() - a.startTs) / 1000)) + "</b>" +
-    (fr ? " · <b>" + esc(fr) + "</b>" : "") + (by ? " · <b>" + esc(by) + "</b>" : " · 帧数字节在停止后统计");
+    (fr ? " · <b>" + esc(fr) + "</b>" : "") + (by ? " · <b>" + esc(by) + "</b>" : " · 条数明细在停止后统计");
 }
 function updateReplayText() {
   const r = drawerId && replaying.get(drawerId);
   if (!r) return;
+  const prog = (r.fromBackend && Number.isFinite(Number(r.bytes))) ? " · 已发 <b>" + esc(fmtBytes(r.bytes)) + "</b>" : "";
   $("recReplayText").innerHTML = "正在回放 <b>" + esc(r.file) + "</b> · " + esc(String(r.speed)) +
-    " 倍速 · 数据发给这座桥的串口" + (r.loop ? " · 循环开着, 回放会一直重复" : "");
+    " 倍速 · 数据发给这座桥的串口" + (r.loop ? " · 循环开着, 点「停止回放」结束" : "") + prog;
+}
+function syncReplayLine() { /* 回放状态行单点刷新 (轮询收编/收点也走这里, 不整列重绘) */
+  if (!drawerId) return;
+  const rp = replaying.get(drawerId);
+  $("recReplay").classList.toggle("show", !!rp);
+  if (rp) updateReplayText();
 }
 function renderRecList() {
   if (!drawerId) return;
@@ -1939,7 +1954,7 @@ async function toggleRecord() {
       const j = await api("/api/fleet/" + encodeURIComponent(id) + "/record/stop", {});
       recActive.delete(id);
       notice("录制完成: " + ((j && j.file) || a.file || "") +
-        " (" + fmtBytes(j && j.frames) + " 帧 / " + fmtBytes(j && j.bytes) + " 字节)", "ok");
+        " (" + fmtBytes(j && j.frames) + " 条 / " + fmtBytes(j && j.bytes) + " 字节)", "ok");
       await refreshRecordings();
     } else {
       const j = await api("/api/fleet/" + encodeURIComponent(id) + "/record/start", {});
@@ -1960,21 +1975,29 @@ async function startReplay(id, file) {
   const loop = $("recLoop").checked;
   try {
     await api("/api/fleet/" + encodeURIComponent(id) + "/replay", { file, speed, loop });
-    const entry = recCache.find((x) => x && x.file === file);
-    const st = { file, speed, loop, startTs: Date.now(), durSec: entry ? Number(entry.durationSec) : NaN };
-    replaying.set(id, st);
-    clearTimeout(replayTimers.get(id));
-    if (!loop && Number.isFinite(st.durSec)) { /* 非循环: 按时长/倍速自动收进行状态 */
-      replayTimers.set(id, setTimeout(() => {
-        replaying.delete(id); replayTimers.delete(id);
-        if (drawerId === id) syncRecUI();
-      }, (st.durSec / speed) * 1000 + 1500));
-    }
+    replaying.set(id, { file, speed, loop, startTs: Date.now(), durSec: NaN }); /* 立即亮态; 后端 b.replay 随轮询接管 */
     if (drawerId === id) syncRecUI();
     notice("回放开始: " + file + " (" + speed + " 倍速" + (loop ? ", 循环" : "") + ") — 数据会发到这座桥的串口", "ok");
   } catch (e) {
-    notice("回放没发出去: " + e.message + " — 桥要先「启动」着, 再点一次「回放」", "err");
+    const msg = String(e.message || "");
+    const hint = msg.includes("串口未打开") ? " — 桥要先「启动」着, 再点一次「回放」"
+      : msg.includes("没有有效帧") ? " — 这段录像只录到了设备发来的数据, 没有这座桥发出去过的; 换一段录像或重新录一段试试"
+      : " — 稍后再点一次「回放」试试";
+    notice("回放没发出去: " + msg + hint, "err");
   }
+}
+async function stopReplay() { /* B1-FIX (XTEST P1-2): 循环回放的 UI 停止入口 (后端 replay/stop, ADR-24⑥) */
+  if (!drawerId) return;
+  const btn = $("btnReplayStop");
+  btn.disabled = true;
+  try {
+    await api("/api/fleet/" + encodeURIComponent(drawerId) + "/replay/stop", {});
+    notice("已停止回放, 不会再把数据发给串口", "ok");
+  } catch (e) {
+    notice("停止回放没成功: " + e.message + " — 回放可能已自己结束, 稍后再点一次", "err");
+  }
+  btn.disabled = false;
+  poll();
 }
 function armDelRec(btn, file) {
   if (btn.dataset.armed !== "1") {
@@ -1990,7 +2013,11 @@ function armDelRec(btn, file) {
   api("/api/fleet/" + encodeURIComponent(drawerId) + "/recordings/delete", { file })
     .then(() => { notice("已删除录像: " + file, "ok"); })
     .catch((e) => { notice("删除没成功: " + e.message + " — 稍后再试一次", "err"); btn.disabled = false; })
-    .finally(() => { btn.textContent = "删除"; btn.classList.remove("armed"); refreshRecordings(); });
+    .finally(() => {
+      btn.textContent = "删除"; btn.classList.remove("armed"); refreshRecordings();
+      /* XTEST P2-5: 行重绘会吞焦点 (旧钮已从 DOM 移除) — 把焦点还给列表, Esc/Tab 立即可用 */
+      if (drawerId && activeTab === "rec") $("recList").focus();
+    });
 }
 function recTick() { /* 1s 节拍: 计时文字走这里, 不整列重绘 */
   if (!drawerId) return;
@@ -2522,6 +2549,7 @@ $("cfForward").addEventListener("input", () => {
 $("btnCfCopyCmd").addEventListener("click", () => copyText($("cfEquiv").textContent, $("btnCfCopyCmd")));
 $("btnCfCopyUrl").addEventListener("click", () => copyText($("cfDataUrl").textContent, $("btnCfCopyUrl")));
 $("btnRec").addEventListener("click", toggleRecord); /* B1: 录制开始/停止同一颗钮 */
+$("btnReplayStop").addEventListener("click", stopReplay); /* B1-FIX: 回放停止入口 (XTEST P1-2) */
 
 $("btnCopyUrl").addEventListener("click", () => copyText($("consoleUrl").textContent, $("btnCopyUrl")));
 $("btnDrCopyUrl").addEventListener("click", () => copyText($("drDataUrl").textContent, $("btnDrCopyUrl")));

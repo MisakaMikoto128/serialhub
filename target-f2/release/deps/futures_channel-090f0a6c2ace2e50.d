@@ -1,0 +1,11 @@
+C:\Users\liuyu\Desktop\WorkPlace\serialhub\target-f2\release\deps\futures_channel-090f0a6c2ace2e50.d: C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\futures-channel-0.3.34\src\lib.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\futures-channel-0.3.34\src\lock.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\futures-channel-0.3.34\src\mpsc\mod.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\futures-channel-0.3.34\src\mpsc\queue.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\futures-channel-0.3.34\src\oneshot.rs
+
+C:\Users\liuyu\Desktop\WorkPlace\serialhub\target-f2\release\deps\libfutures_channel-090f0a6c2ace2e50.rlib: C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\futures-channel-0.3.34\src\lib.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\futures-channel-0.3.34\src\lock.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\futures-channel-0.3.34\src\mpsc\mod.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\futures-channel-0.3.34\src\mpsc\queue.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\futures-channel-0.3.34\src\oneshot.rs
+
+C:\Users\liuyu\Desktop\WorkPlace\serialhub\target-f2\release\deps\libfutures_channel-090f0a6c2ace2e50.rmeta: C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\futures-channel-0.3.34\src\lib.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\futures-channel-0.3.34\src\lock.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\futures-channel-0.3.34\src\mpsc\mod.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\futures-channel-0.3.34\src\mpsc\queue.rs C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\futures-channel-0.3.34\src\oneshot.rs
+
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\futures-channel-0.3.34\src\lib.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\futures-channel-0.3.34\src\lock.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\futures-channel-0.3.34\src\mpsc\mod.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\futures-channel-0.3.34\src\mpsc\queue.rs:
+C:\Users\liuyu\.cargo\registry\src\rsproxy.cn-e3de039b2554c837\futures-channel-0.3.34\src\oneshot.rs:
