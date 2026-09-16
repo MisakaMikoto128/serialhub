@@ -42,6 +42,10 @@ pub enum UserEvent {
         addr: SocketAddr,
     },
     ShowWindow,
+    /// ADR-25: POST /api/show (第二实例"把软件叫回来") —— 主窗口回前台
+    /// (set_visible + 取消最小化 + 抢焦点; 与托盘 ShowWindow 的区别是显式
+    /// 取消最小化, 覆盖"关窗到托盘/最小化到任务栏"两种隐藏态)。
+    ShowMainWindow,
     OpenPort,
     ClosePort,
     OpenBrowser,
@@ -86,6 +90,14 @@ pub fn run_gui(cli: Cli) -> Result<(), String> {
     );
     let port0 = cli.port.clone().unwrap_or_default(); // 托盘 tooltip 初值
     let proxy_for_service = proxy.clone();
+    // ADR-25: /api/show 唤起钩子 —— 控制面 handler 经它把 ShowMainWindow 打进
+    // 主循环。tao 的 EventLoopProxy 是 Clone+Send+Sync (事件循环启动前发送的事件
+    // 会排队, 见模块头), 钩子在任何时刻被调都安全; 窗口尚未创建的启动竞窗被
+    // 事件排队天然吸收。
+    let proxy_for_show = proxy.clone();
+    let show_hook: crate::fleet::ShowMainWindowHook = Arc::new(move || {
+        let _ = proxy_for_show.send_event(UserEvent::ShowMainWindow);
+    });
     let ready_tx2 = ready_tx.clone(); // 给 on_event (首次 Ready)
     let ready_tx3 = ready_tx.clone(); // 给 block_on 的 Err 回传
                                       // FR-13: Ready 事件分流 —— 首次 = 服务就绪 (ready 通道握手);
@@ -127,6 +139,7 @@ pub fn run_gui(cli: Cli) -> Result<(), String> {
                 cmd_rx,
                 service_shutdown_tx,
                 Some(on_event),
+                Some(show_hook),
             )) {
                 // 就绪前失败 (如端口被占用) 必须立即回传主线程; 就绪后失败时 ready 端已关, 发送失败无妨
                 let _ = ready_tx3.send(Err(e));
@@ -139,11 +152,25 @@ pub fn run_gui(cli: Cli) -> Result<(), String> {
     let addr = match ready_rx.recv_timeout(Duration::from_secs(15)) {
         Ok(Ok(addr)) => addr,
         Ok(Err(e)) => {
-            // FR-16: 占用者可能是另一个 SerialHub —— 先按 /api/status 响应形状探测;
-            // 是 → 信息框 (非错误样式) + 确定后自动开既有管理台 + 0 退出 (双击友好);
-            // 否则维持既有错误框语义 (FIX-14/ADR-8)。
+            // FR-16/ADR-25: 占用者可能是另一个 SerialHub —— 先按 /api/status 响应
+            // 形状探测; 是 → POST /api/show 唤起既有实例把主窗口拉到前台 (对端为
+            // headless 时 shown=false 同样算成功), 本实例**静默 0 退出**: 无提示框、
+            // 不开浏览器 —— "重复点图标 = 把软件叫回来"; 否则维持既有错误框语义
+            // (FIX-14/ADR-8)。
             if crate::fleet::another_serialhub_running(probe_addr) {
-                already_running_notice(probe_addr);
+                match crate::fleet::wake_running_instance(probe_addr) {
+                    crate::fleet::WakeResult::Shown => {
+                        eprintln!("serialhub: 已在运行, 已唤起主窗口 ({probe_addr})");
+                    }
+                    crate::fleet::WakeResult::NoWindow => {
+                        eprintln!("serialhub: 已在运行, 对端无窗口可前置 ({probe_addr})");
+                    }
+                    crate::fleet::WakeResult::Failed => {
+                        eprintln!(
+                            "serialhub: 已在运行, 唤起请求失败 (对端可能恰在退出) ({probe_addr})"
+                        );
+                    }
+                }
                 std::process::exit(0);
             }
             fatal_msgbox(&e);
@@ -339,6 +366,13 @@ pub fn run_gui(cli: Cli) -> Result<(), String> {
                 }
                 UserEvent::ShowWindow => {
                     window.set_visible(true);
+                    window.set_focus();
+                }
+                UserEvent::ShowMainWindow => {
+                    // ADR-25: 控制面 /api/show 的唤起指令 —— 主窗口从任意隐藏态
+                    // (关窗到托盘 / 最小化到任务栏) 回到前台并抢焦点。
+                    window.set_visible(true);
+                    window.set_minimized(false);
                     window.set_focus();
                 }
                 UserEvent::OpenPort => {
@@ -566,35 +600,6 @@ fn fatal_msgbox(text: &str) {
 
 #[cfg(not(windows))]
 fn fatal_msgbox(_text: &str) {}
-
-/// FR-16: 第二实例探测到已有 SerialHub 在跑 —— 信息框 (非错误样式: 信息图标,
-/// 标题不带「启动失败」), 用户点确定后浏览器打开既有管理台, 调用方随后 0 退出。
-/// 非 Windows 没有本项目的对话框路径, 直接开浏览器 (0 退出语义不变)。
-#[cfg(windows)]
-fn already_running_notice(addr: SocketAddr) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        MessageBoxW, MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND,
-    };
-    fn wide(s: &str) -> Vec<u16> {
-        let mut w: Vec<u16> = s.encode_utf16().collect();
-        w.push(0);
-        w
-    }
-    unsafe {
-        MessageBoxW(
-            std::ptr::null_mut(),
-            wide(&format!("SerialHub 已在运行\n管理台: http://{addr}")).as_ptr(),
-            wide("SerialHub").as_ptr(),
-            MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND,
-        );
-    }
-    crate::browser::open_url(&format!("http://{addr}/"));
-}
-
-#[cfg(not(windows))]
-fn already_running_notice(addr: SocketAddr) {
-    crate::browser::open_url(&format!("http://{addr}/"));
-}
 
 /// ADR-21③: 托盘事件是否应恢复主窗口 —— 仅**左键**的单击/双击 (DoubleClick 同属
 /// 左键恢复语义)。右键/中键不触碰窗口: 右键菜单是 tray-icon 内建弹出

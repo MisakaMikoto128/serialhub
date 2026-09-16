@@ -256,3 +256,15 @@ qingjian.app 但别抄袭"。参考站已踏勘: 单页 (hero→特性→理念�
 - 录制中实时帧数: 不进契约; UI 轮询 recordings 列表 (文件增长) 兜住。
 - export: GET 与 POST 双受理; import 响应 {"ok":true,"imported":n,"skipped":n}。
 - ts 语义: 录制开始起的相对毫秒; JSONL UTF-8。
+
+## ADR-25 单实例行为改版 (2026-09-15, 架构师; 用户裁定)
+
+用户实测: 第二实例弹"信息提示框+打开浏览器"仍显繁琐 —— 重复点击图标的直觉就是
+"把软件叫回来"。改版:
+① FR-16 行为改为: 第二实例 bind 冲突 → 探测目标 (SerialHub 判别沿用) → **POST
+   /api/show 令已运行实例把主窗口拉到前台** (set_visible + 取消最小化 + 抢焦点),
+   第二实例静默 exit 0 —— 无提示框、不开浏览器。
+② 新端点 POST /api/show: gui 事件循环经 EventLoopProxy 收 ShowMainWindow 事件;
+   headless 实例无窗口 → 返回 {"ok":true,"shown":false} (第二实例同样静默退出)。
+③ 非 SerialHub 程序占用端口 → 维持现有错误框 (FR-8)。
+④ 打开面板按钮 (浏览器路径) 保留不变 —— 那是"主动要看网页版"的入口。

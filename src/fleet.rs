@@ -1206,13 +1206,86 @@ fn http_get_status_body(addr: SocketAddr) -> Option<String> {
     })
 }
 
-/// FR-16: 目标地址上是否跑着另一个 SerialHub。gui.rs (信息框) 与
+/// FR-16: 目标地址上是否跑着另一个 SerialHub。gui.rs (唤起分支) 与
 /// main.rs (headless stderr) 的 bind 失败路径共用。
 pub fn another_serialhub_running(addr: SocketAddr) -> bool {
     matches!(
         classify_instance_probe(http_get_status_body(addr).as_deref()),
         InstanceProbe::AlreadyRunning
     )
+}
+
+// ---------------- FR-16 / ADR-25: /api/show 唤起主窗口 ----------------
+
+/// ADR-25: 唤起主窗口钩子 —— 控制面 POST /api/show 经它通知 gui 事件循环把
+/// 主窗口拉到前台 (gui 侧 = EventLoopProxy 克隆包成的闭包, tao proxy Send+Sync)。
+/// headless 无窗口 → None (端点照常应答, shown=false)。
+pub type ShowMainWindowHook = Arc<dyn Fn() + Send + Sync>;
+
+/// ADR-25: /api/show 的唤起结果 (第二实例 stderr 文案按此分档; 都以 0 退出)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WakeResult {
+    /// 对端是 GUI 实例, 主窗口已收到前置指令 (shown=true)。
+    Shown,
+    /// 对端是 headless 实例, 无窗口可前置 (shown=false, 同样算成功)。
+    NoWindow,
+    /// 请求失败 (对端恰在退出/网络异常) —— 探测已判明是 SerialHub, 仍 0 退出。
+    Failed,
+}
+
+/// ADR-25 纯判别: /api/show 的 JSON 响应体 → 唤起结果。
+/// ok=true + shown=true → Shown; ok=true + shown 缺席/false → NoWindow;
+/// 其余 (ok=false / 非法 JSON / None=请求失败) → Failed。
+fn show_response_outcome(body: Option<&str>) -> WakeResult {
+    match body.and_then(|s| serde_json::from_str::<Value>(s).ok()) {
+        Some(v) if v.get("ok").and_then(Value::as_bool) == Some(true) => {
+            if v.get("shown").and_then(Value::as_bool) == Some(true) {
+                WakeResult::Shown
+            } else {
+                WakeResult::NoWindow
+            }
+        }
+        _ => WakeResult::Failed,
+    }
+}
+
+/// ADR-25: POST `<addr>/api/show` 一次, 成功返回响应体。手写而不引 HTTP 客户端
+/// 依赖 (口径同探测的 http_get_status_body): 一个端点一次 POST, std TcpStream 足矣;
+/// 连接与读写各限 1s (调用点在第二实例退出路径上, 不能久等)。
+/// 状态行非 2xx 视为失败 (None); 必须用 std 同步栈: 调用点不在 tokio 上下文里。
+fn http_post_show(addr: SocketAddr) -> Option<String> {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(1)).ok()?;
+    s.set_read_timeout(Some(Duration::from_secs(1))).ok()?;
+    s.set_write_timeout(Some(Duration::from_secs(1))).ok()?;
+    let req = format!(
+        "POST /api/show HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 0\r\nConnection: close\r\nUser-Agent: serialhub-probe\r\n\r\n"
+    );
+    s.write_all(req.as_bytes()).ok()?;
+    let mut raw = Vec::new();
+    s.read_to_end(&mut raw).ok()?;
+    let text = String::from_utf8_lossy(&raw);
+    // 状态行必须是 2xx (axum 本端点恒 200; 其余一概按失败处理)
+    let status_ok = text
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse::<u16>().ok())
+        .is_some_and(|c| (200..300).contains(&c));
+    if !status_ok {
+        return None;
+    }
+    // 响应体 = 空行之后 (头/体分隔); 无分隔符 (响应不完整) 时按全文判别
+    Some(match text.find("\r\n\r\n") {
+        Some(i) => text[i + 4..].to_owned(),
+        None => text.into_owned(),
+    })
+}
+
+/// FR-16/ADR-25: 唤起已运行实例的主窗口到前台 (第二实例 bind 失败 + 探测判明
+/// 是 SerialHub 后调用; shown true/false 均算成功 —— headless 对端无窗口可前置)。
+pub fn wake_running_instance(addr: SocketAddr) -> WakeResult {
+    show_response_outcome(http_post_show(addr).as_deref())
 }
 
 #[cfg(test)]
@@ -1258,6 +1331,57 @@ mod probe_tests {
     fn timeout_or_unreachable_is_not_detected() {
         // None = 连接失败/超时/读失败 → 维持既有错误语义, 不做友好引导
         assert_eq!(classify_instance_probe(None), InstanceProbe::NotOurs);
+    }
+
+    // ---- ADR-25: /api/show 响应判别与端点核心 ----
+
+    #[test]
+    fn show_outcome_classifies_ok_shown_variants() {
+        assert_eq!(
+            show_response_outcome(Some(r#"{"ok":true,"shown":true}"#)),
+            WakeResult::Shown
+        );
+        // headless 对端: shown=false 同样算成功 (两种形态第二实例都 0 退出)
+        assert_eq!(
+            show_response_outcome(Some(r#"{"ok":true,"shown":false}"#)),
+            WakeResult::NoWindow
+        );
+        assert_eq!(
+            show_response_outcome(Some(r#"{"ok":true}"#)), // shown 缺席 → 宽容按无窗
+            WakeResult::NoWindow
+        );
+    }
+
+    #[test]
+    fn show_outcome_rejects_bad_or_missing_body() {
+        assert_eq!(show_response_outcome(None), WakeResult::Failed);
+        assert_eq!(show_response_outcome(Some("")), WakeResult::Failed);
+        assert_eq!(
+            show_response_outcome(Some(r#"{"ok":false,"error":"x"}"#)),
+            WakeResult::Failed
+        );
+        assert_eq!(
+            show_response_outcome(Some("<html>gateway error</html>")),
+            WakeResult::Failed
+        );
+    }
+
+    #[test]
+    fn api_show_core_none_hook_reports_unshown() {
+        // headless 形态 (无钩子): {"ok":true,"shown":false}, 不 panic
+        let resp = api_show_core(None);
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn api_show_core_invokes_hook_and_reports_shown() {
+        // GUI 形态: 钩子被调用 (事件打入主循环) 且响应 shown=true
+        let called = Arc::new(AtomicBool::new(false));
+        let flag = called.clone();
+        let hook: ShowMainWindowHook = Arc::new(move || flag.store(true, Ordering::Relaxed));
+        let resp = api_show_core(Some(&hook));
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(called.load(Ordering::Relaxed), "钩子应被调用一次");
     }
 
     #[test]
@@ -1307,6 +1431,9 @@ struct ControlState {
     /// ADR-21②: 打开器 (生产 = crate::browser::open_url; 单测注入记录闭包,
     /// 不真开浏览器)。Arc<dyn Fn> 而非 fn 指针: 测试闭包需捕获记录槽。
     console_opener: Arc<dyn Fn(&str) + Send + Sync>,
+    /// ADR-25: 唤起主窗口钩子 (POST /api/show)。GUI = Some(EventLoopProxy 闭包),
+    /// headless = None (端点照常应答 shown:false)。经 run_manager(_with) 注入。
+    show_window: Option<ShowMainWindowHook>,
 }
 
 fn control_router(cs: ControlState) -> Router {
@@ -1343,6 +1470,8 @@ fn control_router(cs: ControlState) -> Router {
         .route("/api/manager/addr", post(manager_set_addr))
         // ---- ADR-21②: 用系统默认浏览器打开管理台 (壳内页面按钮受信路径) ----
         .route("/api/open-console", post(open_console))
+        // ---- ADR-25: 唤起主窗口 (FR-16 第二实例"把软件叫回来") ----
+        .route("/api/show", post(api_show))
         // ---- FR-14 主题插件 ----
         .route("/api/themes", get(themes_list))
         .route("/themes/{file}", get(themes_file))
@@ -1917,6 +2046,27 @@ fn open_console_core(addr: SocketAddr, opener: impl FnOnce(&str)) -> Response {
     Json(json!({ "ok": true, "addr": url })).into_response()
 }
 
+// ---- ADR-25: 唤起主窗口 ----
+
+/// POST /api/show: 令已运行实例把主窗口拉到前台 (set_visible + 取消最小化 +
+/// 抢焦点, 经 EventLoopProxy 打进 gui 主循环), 返回 `{"ok":true,"shown":true}`;
+/// headless (无 gui, 钩子 None) → `{"ok":true,"shown":false}`。shown true/false
+/// 均算成功 (FR-16 第二实例两种形态都以 0 退出)。幂等无副作用, 无请求体。
+async fn api_show(State(cs): State<ControlState>) -> Response {
+    api_show_core(cs.show_window.as_ref())
+}
+
+/// 核心 (ADR-25): 钩子注入以便单测 (记录调用, 不真发事件)。
+fn api_show_core(hook: Option<&ShowMainWindowHook>) -> Response {
+    match hook {
+        Some(h) => {
+            h();
+            Json(json!({ "ok": true, "shown": true })).into_response()
+        }
+        None => Json(json!({ "ok": true, "shown": false })).into_response(),
+    }
+}
+
 // ---- FR-14: 主题插件 ----
 
 /// GET /api/themes: {"themes":[{"name":"light","builtin":true},...]}
@@ -2017,15 +2167,17 @@ async fn legacy_ws(ws: WebSocketUpgrade, State(cs): State<ControlState>) -> Resp
 // ============================================================ 运行循环
 
 /// headless/GUI 共用入口: 构造管理器后进入运行循环。
+/// show_window: ADR-25 唤起主窗口钩子 (GUI 传 Some, headless 传 None)。
 pub async fn run_manager(
     su: ManagerStartup,
     _cmd_tx: UnboundedSender<HubCmd>,
     cmd_rx: UnboundedReceiver<HubCmd>,
     shutdown_tx: watch::Sender<bool>,
     on_event: Option<OnEvent>,
+    show_window: Option<ShowMainWindowHook>,
 ) -> Result<(), String> {
     let mgr = Arc::new(BridgeManager::new(su.fleet_path.clone()));
-    run_manager_with(mgr, su, cmd_rx, shutdown_tx, on_event).await
+    run_manager_with(mgr, su, cmd_rx, shutdown_tx, on_event, show_window).await
 }
 
 /// 可注入已构造好的管理器 (测试持有 Arc 以直查桥内部件)。
@@ -2036,6 +2188,7 @@ pub async fn run_manager_with(
     cmd_rx: UnboundedReceiver<HubCmd>,
     shutdown_tx: watch::Sender<bool>,
     on_event: Option<OnEvent>,
+    show_window: Option<ShowMainWindowHook>,
 ) -> Result<(), String> {
     // watch 接收端必须在 Ready 事件之前创建 (与 run_service 同理: 防晚订阅漏停机;
     // fleet 恢复/兼容桥建桥可能耗时, 竞窗更大) —— 控制面首轮 serve 共用此接收端。
@@ -2221,6 +2374,7 @@ pub async fn run_manager_with(
             themes_dir: themes_dir.clone(),
             console_addr: cur_addr, // 换址轮随新绑定值重建 → 回显恒为现地址
             console_opener: console_opener.clone(),
+            show_window: show_window.clone(),
         };
         // 首轮用 Ready 前订阅好的接收端 (无晚订阅竞态); 换址轮重新订阅
         let mut serve_sd = first_serve_sd
@@ -2814,6 +2968,7 @@ mod tests {
             cmd_rx,
             shutdown_tx.clone(),
             Some(on_event),
+            None, // ADR-25: 测试默认 headless 形态 (无窗口钩子); /api/show 用例单独注入
         ));
         let addr = tokio::time::timeout(Duration::from_secs(5), ready_rx)
             .await
@@ -3011,6 +3166,7 @@ mod tests {
             console_opener: Arc::new(move |url: &str| {
                 lock_mutex(&opened_in_cs).push(url.to_string());
             }),
+            show_window: None,
         };
         let server = tokio::spawn(async move {
             let mut sd_rx = sd_rx;
@@ -3031,6 +3187,51 @@ mod tests {
         assert_eq!(*lock_mutex(&opened), vec![expect]);
 
         let _ = sd_tx.send(true); // 优雅停 serve
+        let _ = server.await;
+    }
+
+    /// ADR-25 端到端: POST /api/show 走真实控制面路由 —— 钩子 None (headless)
+    /// → 200 {"ok":true,"shown":false}; 钩子注入 → shown:true 且钩子被调用。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn show_endpoint_reports_shown_per_hook() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bound = listener.local_addr().unwrap();
+        let called = Arc::new(AtomicBool::new(false));
+        let flag = called.clone();
+        let (sd_tx, sd_rx) = watch::channel(false);
+        let cs = ControlState {
+            mgr: Arc::new(BridgeManager::new(None)),
+            shutdown_tx: sd_tx.clone(),
+            restart_to: Arc::new(Mutex::new(None)),
+            index: "",
+            themes_dir: std::env::temp_dir(),
+            console_addr: bound,
+            console_opener: Arc::new(|_| {}),
+            show_window: Some(Arc::new(move || {
+                flag.store(true, Ordering::Relaxed);
+            })),
+        };
+        let server = tokio::spawn(async move {
+            let mut sd_rx = sd_rx;
+            let _ = axum::serve(listener, control_router(cs))
+                .with_graceful_shutdown(async move {
+                    let _ = sd_rx.changed().await;
+                })
+                .await;
+        });
+
+        // GUI 形态 (钩子 Some): shown=true + 钩子被调
+        let (code, body) = http_req(bound, "POST", "/api/show", None).await;
+        assert_eq!(code, 200, "api/show 应受理: {body}");
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["ok"], json!(true), "{body}");
+        assert_eq!(v["shown"], json!(true), "{body}");
+        assert!(called.load(Ordering::Relaxed), "唤起钩子应被调用");
+
+        // 第二实例判别口径: show_response_outcome 应判为 Shown
+        assert_eq!(show_response_outcome(Some(&body)), WakeResult::Shown);
+
+        let _ = sd_tx.send(true);
         let _ = server.await;
     }
 

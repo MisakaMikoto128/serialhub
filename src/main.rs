@@ -96,8 +96,10 @@ fn main() {
         .expect("tokio runtime")
         .block_on(headless_service(cli.clone()));
     if let Err(e) = run {
-        // FR-16: headless 的管理台 bind 失败同样先探测占用者 —— 另一个 SerialHub
-        // 在跑 → stderr 一行 + 0 退出 (脚本可据此判定"服务已在"); 否则维持错误 + 1 退出。
+        // FR-16/ADR-25: headless 的管理台 bind 失败同样先探测占用者 —— 另一个
+        // SerialHub 在跑 → POST /api/show 唤起 (对端 GUI 则主窗口前置; 对端同为
+        // headless 时 shown=false 也算成功), stderr 一行 + 0 退出 (脚本可据此判定
+        // "服务已在"); 否则维持错误 + 1 退出。
         let su = fleet::ManagerStartup::from_cli(&cli);
         let target = fleet::effective_control_addr(
             su.fleet_path.as_deref(),
@@ -105,7 +107,19 @@ fn main() {
             su.addr_explicit,
         );
         if fleet::another_serialhub_running(target) {
-            eprintln!("SerialHub 已在运行: http://{target}");
+            match fleet::wake_running_instance(target) {
+                fleet::WakeResult::Shown => {
+                    eprintln!("SerialHub 已在运行, 已唤起主窗口: http://{target}");
+                }
+                fleet::WakeResult::NoWindow => {
+                    eprintln!("SerialHub 已在运行, 对端无窗口可前置: http://{target}");
+                }
+                fleet::WakeResult::Failed => {
+                    eprintln!(
+                        "SerialHub 已在运行, 唤起请求失败 (对端可能恰在退出): http://{target}"
+                    );
+                }
+            }
             std::process::exit(0);
         }
         eprintln!("serialhub: {e}");
@@ -117,6 +131,7 @@ async fn headless_service(cli: Cli) -> Result<(), String> {
     let startup = fleet::ManagerStartup::from_cli(&cli);
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<HubCmd>();
     let (shutdown_tx, _) = tokio::sync::watch::channel(false);
-    // 控制面 (管理台) bind 失败时 run_manager 先失败, 兼容桥不会创建 (不开串口直接退出)
-    fleet::run_manager(startup, cmd_tx, cmd_rx, shutdown_tx, None).await
+    // 控制面 (管理台) bind 失败时 run_manager 先失败, 兼容桥不会创建 (不开串口直接退出);
+    // show_window = None (headless 无窗口, /api/show 应答 shown:false, ADR-25)
+    fleet::run_manager(startup, cmd_tx, cmd_rx, shutdown_tx, None, None).await
 }
